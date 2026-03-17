@@ -1,0 +1,11 @@
+{application, nova_auth, [
+    {description, "Authentication library for the Nova ecosystem"},
+    {vsn, "git"},
+    {registered, []},
+    {mod, {nova_auth_app, []}},
+    {applications, [kernel, stdlib, crypto, kura, nova]},
+    {env, []},
+    {modules, []},
+    {licenses, ["MIT"]},
+    {links, []}
+]}.
