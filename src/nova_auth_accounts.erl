@@ -22,7 +22,6 @@ authenticate(AuthMod, Identity, Password) ->
     #{repo := Repo, user_schema := UserSchema} = Cfg,
     IdentityField = maps:get(user_identity_field, Cfg),
     PasswordField = maps:get(user_password_field, Cfg),
-    Algorithm = maps:get(hash_algorithm, Cfg),
     Q = kura_query:where(kura_query:from(UserSchema), {IdentityField, Identity}),
     case kura_repo_worker:all(Repo, Q) of
         {ok, [User]} ->
@@ -32,7 +31,7 @@ authenticate(AuthMod, Identity, Password) ->
                 false -> {error, invalid_credentials}
             end;
         _ ->
-            nova_auth_password:dummy_verify(Algorithm),
+            nova_auth_password:dummy_verify(),
             {error, invalid_credentials}
     end.
 

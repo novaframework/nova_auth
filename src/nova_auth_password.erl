@@ -4,7 +4,7 @@ Password hashing and verification using PBKDF2-SHA256. Includes constant-time
 comparison and dummy verification to prevent user enumeration via timing attacks.
 """.
 
--export([hash/1, hash/2, verify/2, dummy_verify/0, dummy_verify/1]).
+-export([hash/1, hash/2, verify/2, dummy_verify/0]).
 
 -define(PBKDF2_ITERATIONS, 600000).
 -define(PBKDF2_LENGTH, 32).
@@ -48,12 +48,6 @@ verify(_Password, _Hash) ->
 -doc "Simulate password verification timing to prevent user enumeration.".
 -spec dummy_verify() -> false.
 dummy_verify() ->
-    dummy_verify(pbkdf2_sha256).
-
--doc "Simulate password verification timing for a specific algorithm.".
--spec dummy_verify(pbkdf2_sha256 | bcrypt | argon2) -> false.
-dummy_verify(_Algorithm) ->
-    %% Simulate hash timing to prevent user enumeration
     Salt = crypto:strong_rand_bytes(16),
     crypto:pbkdf2_hmac(sha256, <<"dummy">>, Salt, ?PBKDF2_ITERATIONS, ?PBKDF2_LENGTH),
     false.
