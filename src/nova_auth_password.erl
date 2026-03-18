@@ -42,16 +42,6 @@ verify(Password, <<"$pbkdf2-sha256$", Rest/binary>>) ->
         _ ->
             false
     end;
-verify(Password, <<"$2", _/binary>> = BcryptHash) ->
-    %% Legacy bcrypt hash support
-    try
-        Hash = list_to_binary(
-            bcrypt:hashpw(binary_to_list(Password), binary_to_list(BcryptHash))
-        ),
-        crypto:hash_equals(Hash, BcryptHash)
-    catch
-        _:_ -> false
-    end;
 verify(_Password, _Hash) ->
     false.
 
