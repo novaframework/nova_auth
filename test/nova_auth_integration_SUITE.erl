@@ -163,32 +163,56 @@ cleanup_users() ->
 
 setup_tables() ->
     kura_repo_worker:pgo_query(test_auth_repo, <<"CREATE EXTENSION IF NOT EXISTS citext">>, []),
-    kura_repo_worker:pgo_query(test_auth_repo, <<"
-        CREATE TABLE IF NOT EXISTS users (
-            id BIGSERIAL PRIMARY KEY,
-            email TEXT NOT NULL,
-            hashed_password TEXT NOT NULL,
-            confirmed_at TIMESTAMPTZ,
-            inserted_at TIMESTAMPTZ,
-            updated_at TIMESTAMPTZ
-        )
-    ">>, []),
-    kura_repo_worker:pgo_query(test_auth_repo, <<"
-        CREATE UNIQUE INDEX IF NOT EXISTS users_email_idx ON users (email)
-    ">>, []),
-    kura_repo_worker:pgo_query(test_auth_repo, <<"
-        CREATE TABLE IF NOT EXISTS user_tokens (
-            id BIGSERIAL PRIMARY KEY,
-            user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-            token TEXT NOT NULL,
-            context TEXT NOT NULL,
-            inserted_at TIMESTAMPTZ
-        )
-    ">>, []),
-    kura_repo_worker:pgo_query(test_auth_repo, <<"
-        CREATE UNIQUE INDEX IF NOT EXISTS user_tokens_ctx_token_idx
-        ON user_tokens (context, token)
-    ">>, []),
+    kura_repo_worker:pgo_query(
+        test_auth_repo,
+        <<
+            "\n"
+            "        CREATE TABLE IF NOT EXISTS users (\n"
+            "            id BIGSERIAL PRIMARY KEY,\n"
+            "            email TEXT NOT NULL,\n"
+            "            hashed_password TEXT NOT NULL,\n"
+            "            confirmed_at TIMESTAMPTZ,\n"
+            "            inserted_at TIMESTAMPTZ,\n"
+            "            updated_at TIMESTAMPTZ\n"
+            "        )\n"
+            "    "
+        >>,
+        []
+    ),
+    kura_repo_worker:pgo_query(
+        test_auth_repo,
+        <<
+            "\n"
+            "        CREATE UNIQUE INDEX IF NOT EXISTS users_email_idx ON users (email)\n"
+            "    "
+        >>,
+        []
+    ),
+    kura_repo_worker:pgo_query(
+        test_auth_repo,
+        <<
+            "\n"
+            "        CREATE TABLE IF NOT EXISTS user_tokens (\n"
+            "            id BIGSERIAL PRIMARY KEY,\n"
+            "            user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,\n"
+            "            token TEXT NOT NULL,\n"
+            "            context TEXT NOT NULL,\n"
+            "            inserted_at TIMESTAMPTZ\n"
+            "        )\n"
+            "    "
+        >>,
+        []
+    ),
+    kura_repo_worker:pgo_query(
+        test_auth_repo,
+        <<
+            "\n"
+            "        CREATE UNIQUE INDEX IF NOT EXISTS user_tokens_ctx_token_idx\n"
+            "        ON user_tokens (context, token)\n"
+            "    "
+        >>,
+        []
+    ),
     ok.
 
 teardown_tables() ->

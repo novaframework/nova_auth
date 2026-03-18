@@ -1,47 +1,84 @@
 -module(nova_auth_rate_limit).
 -moduledoc ~"""
-Nova plugin for IP-based rate limiting. Tracks requests in an ETS bag table
-and returns 429 when the limit is exceeded within the configured time window.
+Rate limiting Nova plugin backed by Seki.
+
+Uses Seki's sliding window algorithm by default. The limiter is created
+automatically on first use if it doesn't exist.
+
+## Usage
+
+```erlang
+#{prefix => <<"/api/auth">>,
+  plugins => [
+      {pre_request, nova_auth_rate_limit, #{
+          limiter => auth_rate_limit,
+          limit => 10,
+          window => 60000,
+          algorithm => sliding_window
+      }}
+  ],
+  routes => [...]}
+```
+
+## Options
+
+- `limiter` — Limiter name atom (default: `nova_auth_rate_limit`)
+- `limit` — Max requests per window (default: 10)
+- `window` — Window in milliseconds (default: 60000)
+- `algorithm` — Seki algorithm (default: `sliding_window`)
+- `key_fun` — `fun(Req) -> Key` for custom rate limit keys (default: peer IP)
 """.
 -behaviour(nova_plugin).
 
 -export([init/0, stop/1, pre_request/4, post_request/4, plugin_info/0]).
 
--define(TABLE, nova_auth_rate_limit).
--define(DEFAULT_MAX_REQUESTS, 10).
--define(DEFAULT_WINDOW_SECONDS, 60).
+-define(DEFAULT_LIMITER, nova_auth_rate_limit).
+-define(DEFAULT_LIMIT, 10).
+-define(DEFAULT_WINDOW, 60000).
 
--doc "Initialize the plugin with default rate limit settings.".
+-doc false.
+-spec init() -> {ok, map()}.
 init() ->
     {ok, #{
-        max_requests => ?DEFAULT_MAX_REQUESTS,
-        window_seconds => ?DEFAULT_WINDOW_SECONDS,
+        limiter => ?DEFAULT_LIMITER,
+        limit => ?DEFAULT_LIMIT,
+        window => ?DEFAULT_WINDOW,
+        algorithm => sliding_window,
         key_fun => fun default_key/1
     }}.
 
 -doc false.
+-spec stop(map()) -> ok.
 stop(_State) ->
     ok.
 
--doc "Check the request against the rate limit before processing.".
+-doc false.
+-spec pre_request(cowboy_req:req(), term(), map(), term()) ->
+    {ok, cowboy_req:req(), map()} | {stop, cowboy_req:req()}.
 pre_request(Req, _State, PluginState, _) ->
     #{
-        max_requests := MaxRequests,
-        window_seconds := WindowSeconds,
+        limiter := LimiterName,
+        limit := Limit,
+        window := Window,
+        algorithm := Algorithm,
         key_fun := KeyFun
     } = PluginState,
+    ensure_limiter(LimiterName, Limit, Window, Algorithm),
     Key = KeyFun(Req),
-    Now = erlang:system_time(second),
-    WindowStart = Now - WindowSeconds,
-    case check_rate(Key, Now, WindowStart, MaxRequests) of
-        ok ->
-            {ok, Req, PluginState};
-        rate_limited ->
+    case seki:check(LimiterName, Key) of
+        {allow, #{remaining := Remaining}} ->
+            Req1 = cowboy_req:set_resp_header(
+                <<"x-ratelimit-remaining">>, integer_to_binary(Remaining), Req
+            ),
+            {ok, Req1, PluginState};
+        {deny, #{retry_after := RetryAfterMs}} ->
+            RetryAfter = integer_to_binary(max(1, RetryAfterMs div 1000)),
             Body = iolist_to_binary(json:encode(#{<<"error">> => <<"too many requests">>})),
             Req1 = cowboy_req:set_resp_headers(
                 #{
                     <<"content-type">> => <<"application/json">>,
-                    <<"retry-after">> => integer_to_binary(WindowSeconds)
+                    <<"retry-after">> => RetryAfter,
+                    <<"x-ratelimit-remaining">> => <<"0">>
                 },
                 Req
             ),
@@ -51,41 +88,39 @@ pre_request(Req, _State, PluginState, _) ->
     end.
 
 -doc false.
+-spec post_request(cowboy_req:req(), term(), map(), term()) -> {ok, cowboy_req:req(), map()}.
 post_request(Req, _State, PluginState, _) ->
     {ok, Req, PluginState}.
 
--doc "Return plugin metadata.".
+-doc false.
+-spec plugin_info() -> map().
 plugin_info() ->
     #{
         name => <<"nova_auth_rate_limit">>,
-        version => <<"0.1.0">>,
-        description => <<"Rate limiting plugin for Nova">>
+        version => <<"0.2.0">>,
+        description => <<"Rate limiting plugin for Nova (powered by Seki)">>
     }.
 
 %%----------------------------------------------------------------------
 %% Internal
 %%----------------------------------------------------------------------
 
-check_rate(Key, Now, WindowStart, MaxRequests) ->
-    Entries =
-        try
-            ets:select(?TABLE, [
-                {{Key, '$1', '$2'}, [{'>=', '$2', WindowStart}], ['$1']}
-            ])
-        catch
-            error:badarg -> []
-        end,
-    case length(Entries) >= MaxRequests of
+ensure_limiter(Name, Limit, Window, Algorithm) ->
+    case persistent_term:get({?MODULE, Name}, false) of
         true ->
-            rate_limited;
+            ok;
         false ->
-            Ref = make_ref(),
-            Expiry = Now + 60,
-            try
-                ets:insert(?TABLE, {Key, Ref, Expiry}),
-                ok
-            catch
-                error:badarg -> ok
+            case
+                seki:new_limiter(Name, #{
+                    algorithm => Algorithm,
+                    limit => Limit,
+                    window => Window
+                })
+            of
+                ok ->
+                    persistent_term:put({?MODULE, Name}, true);
+                {error, already_exists} ->
+                    persistent_term:put({?MODULE, Name}, true)
             end
     end.
 

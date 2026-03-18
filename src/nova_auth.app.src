@@ -3,7 +3,7 @@
     {vsn, "git"},
     {registered, []},
     {mod, {nova_auth_app, []}},
-    {applications, [kernel, stdlib, crypto, kura, nova]},
+    {applications, [kernel, stdlib, crypto, kura, nova, seki]},
     {env, []},
     {modules, []},
     {licenses, ["MIT"]},

@@ -20,8 +20,12 @@ fields() ->
     ].
 
 registration_changeset(Data, Params) ->
-    CS = kura_changeset:cast(?MODULE, Data, Params,
-        [email, password, password_confirmation]),
+    CS = kura_changeset:cast(
+        ?MODULE,
+        Data,
+        Params,
+        [email, password, password_confirmation]
+    ),
     CS1 = kura_changeset:validate_required(CS, [email, password, password_confirmation]),
     CS2 = kura_changeset:validate_length(CS1, password, [{min, 12}, {max, 72}]),
     CS3 = validate_password_confirmation(CS2),
@@ -31,8 +35,12 @@ registration_changeset(Data, Params) ->
     kura_changeset:put_change(CS5, updated_at, Now).
 
 password_changeset(Data, Params) ->
-    CS = kura_changeset:cast(?MODULE, Data, Params,
-        [password, password_confirmation]),
+    CS = kura_changeset:cast(
+        ?MODULE,
+        Data,
+        Params,
+        [password, password_confirmation]
+    ),
     CS1 = kura_changeset:validate_required(CS, [password, password_confirmation]),
     CS2 = kura_changeset:validate_length(CS1, password, [{min, 12}, {max, 72}]),
     CS3 = validate_password_confirmation(CS2),
@@ -43,17 +51,27 @@ email_changeset(Data, Params) ->
     kura_changeset:validate_required(CS, [email]).
 
 validate_password_confirmation(CS) ->
-    case {kura_changeset:get_change(CS, password),
-          kura_changeset:get_change(CS, password_confirmation)} of
+    case
+        {
+            kura_changeset:get_change(CS, password),
+            kura_changeset:get_change(CS, password_confirmation)
+        }
+    of
         {Pass, Pass} when Pass =/= undefined -> CS;
-        {undefined, _} -> CS;
-        _ -> kura_changeset:add_error(CS, password_confirmation,
-                <<"does not match password">>)
+        {undefined, _} ->
+            CS;
+        _ ->
+            kura_changeset:add_error(
+                CS,
+                password_confirmation,
+                <<"does not match password">>
+            )
     end.
 
 maybe_hash_password(#kura_changeset{valid = true} = CS) ->
     case kura_changeset:get_change(CS, password) of
-        undefined -> CS;
+        undefined ->
+            CS;
         Password ->
             Hashed = nova_auth_password:hash(Password),
             kura_changeset:put_change(CS, hashed_password, Hashed)
