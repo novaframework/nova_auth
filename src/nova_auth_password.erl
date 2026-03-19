@@ -49,5 +49,5 @@ verify(_Password, _Hash) ->
 -spec dummy_verify() -> false.
 dummy_verify() ->
     Salt = crypto:strong_rand_bytes(16),
-    crypto:pbkdf2_hmac(sha256, <<"dummy">>, Salt, ?PBKDF2_ITERATIONS, ?PBKDF2_LENGTH),
+    _ = crypto:pbkdf2_hmac(sha256, <<"dummy">>, Salt, ?PBKDF2_ITERATIONS, ?PBKDF2_LENGTH),
     false.
