@@ -17,6 +17,10 @@ fields() ->
 
 associations() ->
     [
-        #kura_assoc{name = user, type = belongs_to, schema = test_auth_user,
-                    foreign_key = user_id}
+        #kura_assoc{
+            name = user,
+            type = belongs_to,
+            schema = test_auth_user,
+            foreign_key = user_id
+        }
     ].

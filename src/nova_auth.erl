@@ -30,11 +30,11 @@ config(Mod) ->
         undefined ->
             Cfg = Mod:config(),
             Defaults = #{
-                user_identity_field => ?NOVA_AUTH_DEFAULT_IDENTITY_FIELD,
-                user_password_field => ?NOVA_AUTH_DEFAULT_PASSWORD_FIELD,
+                user_identity_field => email,
+                user_password_field => hashed_password,
                 session_validity_days => ?NOVA_AUTH_DEFAULT_SESSION_VALIDITY_DAYS,
-                confirm_validity_days => ?NOVA_AUTH_DEFAULT_CONFIRM_VALIDITY_DAYS,
-                reset_validity_hours => ?NOVA_AUTH_DEFAULT_RESET_VALIDITY_HOURS,
+                confirm_validity_days => 3,
+                reset_validity_hours => 1,
                 hash_algorithm => pbkdf2_sha256,
                 token_bytes => ?NOVA_AUTH_DEFAULT_TOKEN_BYTES
             },

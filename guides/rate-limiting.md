@@ -1,69 +1,99 @@
 # Rate Limiting
 
-`nova_auth_rate_limit` is a Nova plugin that provides IP-based rate limiting
-using an ETS bag table. When a client exceeds the request limit within the
-time window, a `429 Too Many Requests` response is returned with a `Retry-After`
-header.
+Nova Auth includes a rate limiting plugin powered by [Seki](https://github.com/Taure/seki), providing production-grade rate limiting with multiple algorithms.
 
-## Setup
+## Basic Usage
 
-Add `nova_auth_rate_limit` as a plugin in your Nova route configuration:
+Add the plugin to any route group:
 
 ```erlang
-#{prefix => "/api/auth",
+#{prefix => <<"/api/auth">>,
   plugins => [
-      {pre_request, nova_auth_rate_limit, #{
-          max_requests => 5,
-          window_seconds => 60
-      }}
+      {pre_request, nova_auth_rate_limit, #{}}
   ],
   routes => [
-      {"/login", {auth_controller, login}, #{methods => [post]}},
-      {"/register", {auth_controller, register}, #{methods => [post]}}
+      {<<"/login">>, fun my_session_controller:create/1, #{methods => [post]}},
+      {<<"/register">>, fun my_registration_controller:create/1, #{methods => [post]}}
   ]}
 ```
 
-## Configuration Options
+By default, this allows 10 requests per 60 seconds per IP address using a sliding window algorithm.
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `max_requests` | `pos_integer()` | `10` | Maximum requests allowed within the window |
-| `window_seconds` | `pos_integer()` | `60` | Time window in seconds |
-| `key_fun` | `fun((cowboy_req:req()) -> term())` | IP-based | Function to extract the rate limit key from the request |
+## Configuration
 
-## Custom Key Function
-
-By default, rate limiting is keyed by client IP address. You can provide a
-custom key function to rate limit by other criteria:
+Pass options in the plugin config map:
 
 ```erlang
-%% Rate limit by API key header
-KeyFun = fun(Req) ->
-    cowboy_req:header(<<"x-api-key">>, Req, <<"anonymous">>)
-end,
-
-#{plugins => [
-    {pre_request, nova_auth_rate_limit, #{
-        max_requests => 100,
-        window_seconds => 3600,
-        key_fun => KeyFun
-    }}
-]}
+{pre_request, nova_auth_rate_limit, #{
+    limiter => auth_rate_limit,      % Limiter name (default: nova_auth_rate_limit)
+    limit => 5,                       % Max requests per window (default: 10)
+    window => 900000,                 % Window in ms — 15 minutes (default: 60000)
+    algorithm => token_bucket,        % Seki algorithm (default: sliding_window)
+    key_fun => fun my_key/1           % Custom key function (default: peer IP)
+}}
 ```
+
+## Algorithms
+
+Seki supports four rate limiting algorithms:
+
+| Algorithm | Best For | Burst Control |
+|-----------|----------|---------------|
+| `sliding_window` | General purpose (default) | Prevents boundary bursts |
+| `token_bucket` | APIs with controlled bursts | Allows bursts up to bucket size |
+| `gcra` | High-performance, minimal state | Configurable tolerance |
+| `leaky_bucket` | Traffic shaping | No bursts |
+
+## Custom Rate Limit Keys
+
+By default, rate limiting is per client IP. You can customize this:
 
 ```erlang
-%% Rate limit by IP + path combination
-KeyFun = fun(Req) ->
-    {IP, _Port} = cowboy_req:peer(Req),
-    Path = cowboy_req:path(Req),
-    {IP, Path}
-end
+%% Rate limit by authenticated user
+{pre_request, nova_auth_rate_limit, #{
+    key_fun => fun(Req) ->
+        case maps:get(auth_data, Req, undefined) of
+            #{id := UserId} -> {user, UserId};
+            _ -> {ip, element(1, cowboy_req:peer(Req))}
+        end
+    end
+}}
 ```
 
-## Response Format
+## Response Headers
 
-When rate limited, the plugin stops request processing and returns:
+On allowed requests:
+- `x-ratelimit-remaining` — remaining requests in the current window
 
-- **Status:** `429 Too Many Requests`
-- **Headers:** `Content-Type: application/json`, `Retry-After: <window_seconds>`
-- **Body:** `{"error": "too many requests"}`
+On denied requests (429 Too Many Requests):
+- `retry-after` — seconds until the client can retry
+- `x-ratelimit-remaining` — `0`
+
+## Multiple Limiters
+
+You can apply different rate limits to different route groups:
+
+```erlang
+%% Strict limit for auth endpoints
+#{prefix => <<"/api/auth">>,
+  plugins => [{pre_request, nova_auth_rate_limit, #{
+      limiter => auth_limit,
+      limit => 5,
+      window => 900000
+  }}]}
+
+%% More permissive for general API
+#{prefix => <<"/api">>,
+  plugins => [{pre_request, nova_auth_rate_limit, #{
+      limiter => api_limit,
+      limit => 100,
+      window => 60000
+  }}]}
+```
+
+## Telemetry
+
+Seki emits telemetry events that you can observe:
+
+- `[seki, rate_limit, allow]` — request allowed
+- `[seki, rate_limit, deny]` — request denied

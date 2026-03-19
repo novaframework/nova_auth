@@ -1,6 +1,6 @@
 -module(nova_auth_sup).
 -moduledoc ~"""
-Top-level supervisor for nova_auth. Supervises the rate limit ETS owner process.
+Top-level supervisor for nova_auth.
 """.
 -behaviour(supervisor).
 
@@ -13,11 +13,4 @@ start_link() ->
 
 -doc false.
 init([]) ->
-    Children = [
-        #{
-            id => nova_auth_rate_limit_server,
-            start => {nova_auth_rate_limit_server, start_link, []},
-            type => worker
-        }
-    ],
-    {ok, {#{strategy => one_for_one, intensity => 5, period => 10}, Children}}.
+    {ok, {#{strategy => one_for_one, intensity => 5, period => 10}, []}}.
