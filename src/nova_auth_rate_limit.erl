@@ -96,9 +96,11 @@ post_request(Req, _State, PluginState, _) ->
 -spec plugin_info() -> map().
 plugin_info() ->
     #{
-        name => <<"nova_auth_rate_limit">>,
+        title => <<"nova_auth_rate_limit">>,
         version => <<"0.2.0">>,
-        description => <<"Rate limiting plugin for Nova (powered by Seki)">>
+        description => <<"Rate limiting plugin for Nova (powered by Seki)">>,
+        authors => [<<"Nova Framework">>],
+        url => <<"https://github.com/novaframework/nova_auth">>
     }.
 
 %%----------------------------------------------------------------------

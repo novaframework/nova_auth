@@ -42,7 +42,6 @@ reset_password(AuthMod, Token, NewParams) ->
     Cfg = nova_auth:config(AuthMod),
     #{repo := Repo, token_schema := TokenSchema, user_schema := UserSchema} = Cfg,
     ResetHours = maps:get(reset_validity_hours, Cfg),
-    ValidityDays = ResetHours / 24,
     try
         HashedToken = nova_auth_token:hash(Token),
         Q = kura_query:where(
@@ -51,7 +50,7 @@ reset_password(AuthMod, Token, NewParams) ->
         ),
         case kura_repo_worker:all(Repo, Q) of
             {ok, [TokenRecord]} ->
-                case nova_auth_token:valid(maps:get(inserted_at, TokenRecord), ValidityDays) of
+                case token_valid_hours(maps:get(inserted_at, TokenRecord), ResetHours) of
                     true ->
                         UserId = maps:get(user_id, TokenRecord),
                         case kura_repo_worker:get(Repo, UserSchema, UserId) of
@@ -88,3 +87,8 @@ apply_password_changeset(UserSchema, User, Params) ->
         true -> UserSchema:password_changeset(User, Params);
         false -> kura_changeset:cast(UserSchema, User, Params, [password, password_confirmation])
     end.
+
+token_valid_hours(InsertedAt, ValidityHours) ->
+    Now = calendar:datetime_to_gregorian_seconds(calendar:universal_time()),
+    TokenTime = calendar:datetime_to_gregorian_seconds(InsertedAt),
+    (Now - TokenTime) < (ValidityHours * 60 * 60).
