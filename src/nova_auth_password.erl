@@ -2,11 +2,22 @@
 -moduledoc ~"""
 Password hashing and verification using PBKDF2-SHA256. Includes constant-time
 comparison and dummy verification to prevent user enumeration via timing attacks.
+
+## Configuration
+
+Set iterations via application environment:
+
+```erlang
+{nova_auth, [{pbkdf2_iterations, 600000}]}.
+```
+
+OWASP recommends 600,000 for PBKDF2-SHA256 (default). Lower values trade
+security margin for speed — 100,000+ is reasonable for game backends.
 """.
 
 -export([hash/1, hash/2, verify/2, dummy_verify/0]).
 
--define(PBKDF2_ITERATIONS, 600000).
+-define(DEFAULT_ITERATIONS, 600000).
 -define(PBKDF2_LENGTH, 32).
 
 -doc "Hash a password using the default algorithm (PBKDF2-SHA256).".
@@ -17,10 +28,11 @@ hash(Password) ->
 -doc "Hash a password using the specified algorithm.".
 -spec hash(binary(), pbkdf2_sha256 | bcrypt | argon2) -> binary().
 hash(Password, pbkdf2_sha256) ->
+    Iterations = iterations(),
     Salt = crypto:strong_rand_bytes(16),
-    DK = crypto:pbkdf2_hmac(sha256, Password, Salt, ?PBKDF2_ITERATIONS, ?PBKDF2_LENGTH),
-    Iterations = integer_to_binary(?PBKDF2_ITERATIONS),
-    <<"$pbkdf2-sha256$", Iterations/binary, "$", (base64:encode(Salt))/binary, "$",
+    DK = crypto:pbkdf2_hmac(sha256, Password, Salt, Iterations, ?PBKDF2_LENGTH),
+    IterBin = integer_to_binary(Iterations),
+    <<"$pbkdf2-sha256$", IterBin/binary, "$", (base64:encode(Salt))/binary, "$",
         (base64:encode(DK))/binary>>;
 hash(Password, bcrypt) ->
     hash(Password, pbkdf2_sha256);
@@ -48,6 +60,13 @@ verify(_Password, _Hash) ->
 -doc "Simulate password verification timing to prevent user enumeration.".
 -spec dummy_verify() -> false.
 dummy_verify() ->
+    Iterations = iterations(),
     Salt = crypto:strong_rand_bytes(16),
-    _ = crypto:pbkdf2_hmac(sha256, <<"dummy">>, Salt, ?PBKDF2_ITERATIONS, ?PBKDF2_LENGTH),
+    _ = crypto:pbkdf2_hmac(sha256, <<"dummy">>, Salt, Iterations, ?PBKDF2_LENGTH),
     false.
+
+%% --- Internal ---
+
+-spec iterations() -> pos_integer().
+iterations() ->
+    application:get_env(nova_auth, pbkdf2_iterations, ?DEFAULT_ITERATIONS).
