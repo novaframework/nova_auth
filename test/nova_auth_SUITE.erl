@@ -27,11 +27,19 @@ init_per_suite(Config) ->
     Config.
 
 end_per_suite(_Config) ->
-    catch persistent_term:erase({nova_auth, test_auth_config}),
+    (try
+        persistent_term:erase({nova_auth, test_auth_config})
+    catch
+        _:_ -> ok
+    end),
     ok.
 
 config_returns_defaults(_Config) ->
-    catch persistent_term:erase({nova_auth, test_auth_config}),
+    (try
+        persistent_term:erase({nova_auth, test_auth_config})
+    catch
+        _:_ -> ok
+    end),
     Cfg = nova_auth:config(test_auth_config),
     ?assertEqual(email, maps:get(user_identity_field, Cfg)),
     ?assertEqual(hashed_password, maps:get(user_password_field, Cfg)),
@@ -43,18 +51,30 @@ config_returns_defaults(_Config) ->
     ?assertEqual(test_auth_token, maps:get(token_schema, Cfg)).
 
 config_caches_in_persistent_term(_Config) ->
-    catch persistent_term:erase({nova_auth, test_auth_config}),
+    (try
+        persistent_term:erase({nova_auth, test_auth_config})
+    catch
+        _:_ -> ok
+    end),
     Cfg1 = nova_auth:config(test_auth_config),
     Cfg2 = nova_auth:config(test_auth_config),
     ?assertEqual(Cfg1, Cfg2),
     ?assertNotEqual(undefined, persistent_term:get({nova_auth, test_auth_config}, undefined)).
 
 config_key_lookup(_Config) ->
-    catch persistent_term:erase({nova_auth, test_auth_config}),
+    (try
+        persistent_term:erase({nova_auth, test_auth_config})
+    catch
+        _:_ -> ok
+    end),
     ?assertEqual(test_auth_repo, nova_auth:config(test_auth_config, repo)).
 
 invalidate_cache_clears(_Config) ->
-    catch persistent_term:erase({nova_auth, test_auth_config}),
+    (try
+        persistent_term:erase({nova_auth, test_auth_config})
+    catch
+        _:_ -> ok
+    end),
     _Cfg = nova_auth:config(test_auth_config),
     nova_auth:invalidate_cache(test_auth_config),
     ?assertEqual(undefined, persistent_term:get({nova_auth, test_auth_config}, undefined)).
