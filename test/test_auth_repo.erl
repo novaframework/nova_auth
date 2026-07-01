@@ -15,11 +15,12 @@ start() ->
         pool_module => Backend:pool_module(),
         driver_module => Backend:driver_module(),
         dialect => Backend:dialect(),
-        host => "localhost",
+        pool => test_auth_repo,
+        database => <<"nova_auth_test">>,
+        hostname => <<"localhost">>,
         port => 5555,
-        database => "nova_auth_test",
-        user => "postgres",
-        password => "root",
+        username => <<"postgres">>,
+        password => <<"root">>,
         pool_size => 5
     }),
     kura_repo_worker:start(?MODULE).
