@@ -16,7 +16,11 @@
     test_change_password/1,
     test_change_password_wrong_current/1,
     test_confirm_token_flow/1,
-    test_reset_token_flow/1
+    test_reset_token_flow/1,
+    test_refresh_rotation_flow/1,
+    test_refresh_reuse_revokes_family/1,
+    test_refresh_invalid/1,
+    test_revoke_all_tokens/1
 ]).
 
 all() ->
@@ -28,7 +32,11 @@ all() ->
         test_change_password,
         test_change_password_wrong_current,
         test_confirm_token_flow,
-        test_reset_token_flow
+        test_reset_token_flow,
+        test_refresh_rotation_flow,
+        test_refresh_reuse_revokes_family,
+        test_refresh_invalid,
+        test_revoke_all_tokens
     ].
 
 init_per_suite(Config) ->
@@ -144,6 +152,55 @@ test_reset_token_flow(_Config) ->
         test_auth_config, <<"reset@example.com">>, <<"resetpass12345">>
     ).
 
+test_refresh_rotation_flow(_Config) ->
+    cleanup_users(),
+    {ok, User} = register_user(<<"refresh@example.com">>, <<"password123456">>),
+    {ok, #{access_token := Access, refresh_token := Refresh}} =
+        nova_auth_refresh:generate_pair(test_auth_config, User),
+    %% Access token resolves to the user.
+    {ok, U1} = nova_auth_refresh:get_user_by_access_token(test_auth_config, Access),
+    ?assertEqual(maps:get(id, User), maps:get(id, U1)),
+    %% Rotating the refresh token yields a fresh pair.
+    {ok, #{access_token := Access2, refresh_token := Refresh2}} =
+        nova_auth_refresh:refresh(test_auth_config, Refresh),
+    ?assertNotEqual(Access, Access2),
+    ?assertNotEqual(Refresh, Refresh2),
+    {ok, _} = nova_auth_refresh:get_user_by_access_token(test_auth_config, Access2),
+    %% The new refresh token still works.
+    ?assertMatch({ok, _}, nova_auth_refresh:refresh(test_auth_config, Refresh2)).
+
+test_refresh_reuse_revokes_family(_Config) ->
+    cleanup_users(),
+    {ok, User} = register_user(<<"reuse@example.com">>, <<"password123456">>),
+    {ok, #{refresh_token := Refresh}} =
+        nova_auth_refresh:generate_pair(test_auth_config, User),
+    {ok, #{refresh_token := Refresh2}} =
+        nova_auth_refresh:refresh(test_auth_config, Refresh),
+    %% Replaying the already-rotated token is detected as reuse...
+    ?assertEqual(
+        {error, reuse_detected},
+        nova_auth_refresh:refresh(test_auth_config, Refresh)
+    ),
+    %% ...and burns the whole family, so the valid successor is now dead too.
+    ?assertMatch({error, _}, nova_auth_refresh:refresh(test_auth_config, Refresh2)).
+
+test_refresh_invalid(_Config) ->
+    ?assertEqual(
+        {error, invalid_refresh},
+        nova_auth_refresh:refresh(test_auth_config, <<"not-a-real-token">>)
+    ).
+
+test_revoke_all_tokens(_Config) ->
+    cleanup_users(),
+    {ok, User} = register_user(<<"revokeall@example.com">>, <<"password123456">>),
+    {ok, #{access_token := Access}} =
+        nova_auth_refresh:generate_pair(test_auth_config, User),
+    ok = nova_auth_refresh:revoke_all(test_auth_config, maps:get(id, User)),
+    ?assertMatch(
+        {error, _},
+        nova_auth_refresh:get_user_by_access_token(test_auth_config, Access)
+    ).
+
 %%----------------------------------------------------------------------
 %% Helpers
 %%----------------------------------------------------------------------
@@ -198,6 +255,8 @@ setup_tables() ->
             "            user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,\n"
             "            token TEXT NOT NULL,\n"
             "            context TEXT NOT NULL,\n"
+            "            family_id TEXT,\n"
+            "            used_at TIMESTAMPTZ,\n"
             "            inserted_at TIMESTAMPTZ\n"
             "        )\n"
             "    "
