@@ -11,6 +11,10 @@ nova_auth_session, etc.). OIDC-only applications can omit them entirely.
 
 -include("../include/nova_auth.hrl").
 
+%% Config defaults used only here (kept local rather than in the shared header).
+-define(NOVA_AUTH_DEFAULT_ACCESS_VALIDITY_MINUTES, 60).
+-define(NOVA_AUTH_DEFAULT_REFRESH_VALIDITY_DAYS, 30).
+
 -export([config/1, config/2, invalidate_cache/1]).
 
 -export_type([actor/0]).
