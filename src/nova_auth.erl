@@ -45,6 +45,8 @@ config(Mod) ->
                 user_identity_field => email,
                 user_password_field => hashed_password,
                 session_validity_days => ?NOVA_AUTH_DEFAULT_SESSION_VALIDITY_DAYS,
+                access_token_validity_minutes => ?NOVA_AUTH_DEFAULT_ACCESS_VALIDITY_MINUTES,
+                refresh_token_validity_days => ?NOVA_AUTH_DEFAULT_REFRESH_VALIDITY_DAYS,
                 confirm_validity_days => 3,
                 reset_validity_hours => 1,
                 hash_algorithm => pbkdf2_sha256,
