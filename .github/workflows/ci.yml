@@ -25,3 +25,4 @@ jobs:
       enable-summary: true
 
       extra-services-compose: 'docker-compose.ci.yml'
+    secrets: inherit
