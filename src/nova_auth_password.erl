@@ -73,4 +73,7 @@ dummy_verify() ->
 
 -spec iterations() -> pos_integer().
 iterations() ->
-    application:get_env(nova_auth, pbkdf2_iterations, ?DEFAULT_ITERATIONS).
+    case application:get_env(nova_auth, pbkdf2_iterations, ?DEFAULT_ITERATIONS) of
+        Iterations when is_integer(Iterations), Iterations > 0 -> Iterations;
+        Other -> error({invalid_pbkdf2_iterations, Other})
+    end.

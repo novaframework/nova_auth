@@ -75,7 +75,7 @@ pre_request(Req, _Env, Options, PluginState) ->
             ),
             {ok, Req1, PluginState};
         {deny, #{retry_after := RetryAfterMs}} ->
-            RetryAfter = integer_to_binary(max(1, RetryAfterMs div 1000)),
+            RetryAfter = integer_to_binary(retry_after_seconds(RetryAfterMs)),
             Body = iolist_to_binary(json:encode(#{<<"error">> => <<"too many requests">>})),
             Req1 = cowboy_req:set_resp_headers(
                 #{
@@ -137,6 +137,11 @@ ensure_limiter(Name, Limit, Window, Algorithm) ->
                     persistent_term:put({?MODULE, Name}, true)
             end
     end.
+
+retry_after_seconds(Ms) when is_integer(Ms), Ms >= 1000 ->
+    Ms div 1000;
+retry_after_seconds(_) ->
+    1.
 
 default_key(Req) ->
     {IP, _Port} = cowboy_req:peer(Req),

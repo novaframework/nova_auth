@@ -65,7 +65,7 @@ config(Mod) ->
             ok = check_hash_algorithm(maps:get(hash_algorithm, Merged)),
             persistent_term:put({nova_auth, Mod}, Merged),
             Merged;
-        Cfg ->
+        Cfg when is_map(Cfg) ->
             Cfg
     end.
 
@@ -75,7 +75,7 @@ config(Mod, Key) ->
     maps:get(Key, config(Mod)).
 
 -doc "Evict the cached configuration for `Mod` from persistent_term.".
--spec invalidate_cache(module()) -> true.
+-spec invalidate_cache(module()) -> boolean().
 invalidate_cache(Mod) ->
     persistent_term:erase({nova_auth, Mod}).
 
