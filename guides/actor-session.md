@@ -57,15 +57,12 @@ ok = nova_auth_actor:store(Req1, #{
 `renew/1` deletes the current session's data and moves the client to a new
 session id. Call it at every privilege change (sign-in, sign-out, password
 change) so a session id planted or observed before that point stops working
-(session fixation). Store the actor with the returned request, and return it
-from the controller so the new cookie is sent.
+(session fixation). Store the actor with the returned request: it carries
+the new session id.
 
-On Nova releases that provide `nova_session:renew(Req)`, `renew/1` calls it. On
-older releases it deletes the session with `nova_session:delete/1` and sets a
-new `session_id` cookie itself: a 256-bit `crypto:strong_rand_bytes/1` id,
-`Path=/`, `HttpOnly`, `SameSite=Lax`, and `Secure` on HTTPS requests. The
-`nova` application's `session_cookie_opts` map, when set, is merged over
-those defaults (set `secure => true` behind a TLS-terminating proxy).
+`renew/1` delegates to `nova_session:renew/1` (Nova 0.19 and later), and
+Nova issues the new `session_id` cookie with the response. Cookie flags are
+set through the `nova` application's `session_cookie_opts`.
 
 ### Fetch
 
