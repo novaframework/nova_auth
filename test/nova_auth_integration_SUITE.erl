@@ -32,6 +32,8 @@
     test_require_confirmed/1,
     test_require_confirmed_wrong_password/1,
     test_refresh_concurrent_single_winner/1,
+    test_reset_concurrent_single_use/1,
+    test_reset_failed_update_keeps_token/1,
     test_register_error_has_no_password/1,
     test_change_password_error_has_no_password/1
 ]).
@@ -61,6 +63,8 @@ all() ->
         test_require_confirmed,
         test_require_confirmed_wrong_password,
         test_refresh_concurrent_single_winner,
+        test_reset_concurrent_single_use,
+        test_reset_failed_update_keeps_token,
         test_register_error_has_no_password,
         test_change_password_error_has_no_password
     ].
@@ -435,6 +439,45 @@ test_refresh_concurrent_single_winner(_Config) ->
         end
      || Results <- Trials
     ].
+
+test_reset_concurrent_single_use(_Config) ->
+    cleanup_users(),
+    {ok, User} = register_user(<<"reset-race@example.com">>, <<"password123456">>),
+    Params = #{
+        password => <<"newpassword12345">>,
+        password_confirmation => <<"newpassword12345">>
+    },
+    [
+        begin
+            {ok, Token} = nova_auth_reset:generate_reset_token(test_auth_config, User),
+            Results = in_parallel(6, fun() ->
+                nova_auth_reset:reset_password(test_auth_config, Token, Params)
+            end),
+            ?assertEqual(1, length([ok || {ok, _} <- Results])),
+            ?assertEqual(
+                {error, not_found},
+                nova_auth_reset:reset_password(test_auth_config, Token, Params)
+            )
+        end
+     || _ <- lists:seq(1, 3)
+    ].
+
+test_reset_failed_update_keeps_token(_Config) ->
+    cleanup_users(),
+    {ok, User} = register_user(<<"reset-keep@example.com">>, <<"password123456">>),
+    {ok, Token} = nova_auth_reset:generate_reset_token(test_auth_config, User),
+    {error, CS} = nova_auth_reset:reset_password(test_auth_config, Token, #{
+        password => <<"short">>,
+        password_confirmation => <<"short">>
+    }),
+    ?assertEqual(nomatch, binary:match(term_to_binary(CS), <<"short">>)),
+    ?assertMatch(
+        {ok, _},
+        nova_auth_reset:reset_password(test_auth_config, Token, #{
+            password => <<"resetpass12345">>,
+            password_confirmation => <<"resetpass12345">>
+        })
+    ).
 
 test_register_error_has_no_password(_Config) ->
     cleanup_users(),
