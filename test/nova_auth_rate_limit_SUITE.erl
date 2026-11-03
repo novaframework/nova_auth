@@ -17,7 +17,9 @@
     key_module_function/1,
     key_fun_is_rejected/1,
     invalid_key_is_rejected/1,
-    mismatched_settings_warn_once/1
+    named_limiter_settings_conflict_raises/1,
+    unnamed_groups_with_different_settings_are_independent/1,
+    unnamed_groups_with_same_settings_share_counters/1
 ]).
 
 all() ->
@@ -34,7 +36,9 @@ groups() ->
             key_module_function,
             key_fun_is_rejected,
             invalid_key_is_rejected,
-            mismatched_settings_warn_once
+            named_limiter_settings_conflict_raises,
+            unnamed_groups_with_different_settings_are_independent,
+            unnamed_groups_with_same_settings_share_counters
         ]}
     ].
 
@@ -114,26 +118,35 @@ invalid_key_is_rejected(_Config) ->
         nova_auth_rate_limit:pre_request(req({10, 0, 0, 7}), #{}, Options, s)
     ).
 
-mismatched_settings_warn_once(_Config) ->
+named_limiter_settings_conflict_raises(_Config) ->
     First = #{limiter => rl_shared, limit => 5},
     Other = #{limiter => rl_shared, limit => 50},
     {ok, _, _} = nova_auth_rate_limit:pre_request(req({10, 0, 0, 8}), #{}, First, s),
-    ok = test_log_capture:start(),
-    try
-        {ok, _, _} = nova_auth_rate_limit:pre_request(req({10, 0, 0, 8}), #{}, Other, s),
-        {ok, _, _} = nova_auth_rate_limit:pre_request(req({10, 0, 0, 8}), #{}, Other, s),
-        {ok, _, _} = nova_auth_rate_limit:pre_request(req({10, 0, 0, 8}), #{}, First, s),
-        Warnings = [
-            Report
-         || #{level := warning, msg := {report, #{limiter := rl_shared} = Report}} <-
-                test_log_capture:events()
-        ],
-        ?assertMatch(
-            [#{settings := #{limit := 5}, ignored := #{limit := 50}}], Warnings
-        )
-    after
-        test_log_capture:stop()
-    end.
+    ?assertError(
+        {limiter_settings_conflict, rl_shared, #{limit := 5}, #{limit := 50}},
+        nova_auth_rate_limit:pre_request(req({10, 0, 0, 8}), #{}, Other, s)
+    ),
+    ?assertMatch({ok, _, _}, nova_auth_rate_limit:pre_request(req({10, 0, 0, 8}), #{}, First, s)).
+
+unnamed_groups_with_different_settings_are_independent(_Config) ->
+    Lax = #{limit => 1000},
+    Strict = #{limit => 3, window => 900000},
+    {ok, _, _} = nova_auth_rate_limit:pre_request(req({10, 0, 1, 1}), #{}, Lax, s),
+    Outcomes = [
+        element(1, nova_auth_rate_limit:pre_request(req({10, 0, 1, 2}), #{}, Strict, s))
+     || _ <- lists:seq(1, 5)
+    ],
+    ?assertEqual([ok, ok, ok, stop, stop], Outcomes),
+    {ok, Req1, _} = nova_auth_rate_limit:pre_request(req({10, 0, 1, 2}), #{}, Lax, s),
+    ?assertEqual(~"999", cowboy_req:resp_header(~"x-ratelimit-remaining", Req1)).
+
+unnamed_groups_with_same_settings_share_counters(_Config) ->
+    Options = #{limit => 7, window => 120000},
+    {ok, _, _} = nova_auth_rate_limit:pre_request(req({10, 0, 2, 1}), #{}, Options, s),
+    {ok, Req1, _} = nova_auth_rate_limit:pre_request(
+        req({10, 0, 2, 1}), #{}, maps:merge(#{algorithm => sliding_window}, Options), s
+    ),
+    ?assertEqual(~"5", cowboy_req:resp_header(~"x-ratelimit-remaining", Req1)).
 
 req(IP) ->
     #{

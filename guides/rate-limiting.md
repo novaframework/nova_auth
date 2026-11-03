@@ -25,7 +25,7 @@ Pass options in the plugin config map:
 
 ```erlang
 {pre_request, nova_auth_rate_limit, #{
-    limiter => auth_rate_limit,      % Limiter name (default: nova_auth_rate_limit)
+    limiter => auth_rate_limit,      % Limiter name (default: derived from the settings)
     limit => 5,                       % Max requests per window (default: 10)
     window => 900000,                 % Window in ms, 15 minutes (default: 60000)
     algorithm => token_bucket,        % Seki algorithm (default: sliding_window)
@@ -33,12 +33,16 @@ Pass options in the plugin config map:
 }}
 ```
 
-A limiter is created by the first request that uses its name, with that
-request's `limit`, `window` and `algorithm`. Route groups that use the same
-`limiter` name (including the default) share its counters and keep the
-settings it was created with; a request with different settings is still
-counted against the original ones, and the plugin logs a warning (once per
-distinct setting). Give each distinct policy its own name.
+Without `limiter`, the limiter name is derived from `limit`, `window` and
+`algorithm`. Route groups with the same settings share counters, and groups
+with different settings are independent, so a strict group can never be
+loosened by a lax one that happened to serve the first request.
+
+Route groups that give the same `limiter` name share its counters and must
+use the same settings. A limiter is created by the first request that uses
+its name; a later request under that name with other settings raises
+`error({limiter_settings_conflict, Name, Existing, Requested})`, so the
+mismatch shows up as a 500 in testing instead of a silently weaker limit.
 
 ## Algorithms
 

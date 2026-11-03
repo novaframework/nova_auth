@@ -24,18 +24,19 @@ automatically on first use if it doesn't exist.
 
 Every option is optional; `#{}` gives the defaults.
 
-- `limiter`: limiter name atom (default: `nova_auth_rate_limit`)
+- `limiter`: limiter name atom (default: a name derived from the settings)
 - `limit`: max requests per window (default: 10)
 - `window`: window in milliseconds (default: 60000)
 - `algorithm`: Seki algorithm (default: `sliding_window`)
 - `key`: `{Module, Function}`; `Module:Function(Req)` returns the rate
   limit key (default: the peer IP address)
 
-The limiter is created with the `limit`, `window` and `algorithm` of the
-first request that uses its name, and route groups that share a name share
-its counters and keep those first settings. A request whose settings differ
-from the existing limiter's logs a warning (once per distinct setting).
-Give each distinct policy its own `limiter` name.
+Without `limiter`, the name is derived from `limit`, `window` and
+`algorithm`: route groups with the same settings share counters and groups
+with different settings are independent. Route groups that give the same
+`limiter` name share its counters and must use the same settings; a request
+whose settings differ from the ones the limiter was created with raises
+`error({limiter_settings_conflict, Name, Existing, Requested})`.
 
 A denied request returns `{stop, {reply, 429, Headers, Body}, Req, State}`:
 Nova sends the 429 JSON reply and no later plugin or controller runs.
@@ -45,13 +46,10 @@ The `key_fun` option of earlier releases is rejected with
 """.
 -behaviour(nova_plugin).
 
--include_lib("kernel/include/logger.hrl").
-
 -export([init/0, stop/1, pre_request/4, post_request/4, plugin_info/0]).
 
 -type reply() :: {reply, 429, #{binary() => binary()}, binary()}.
 
--define(DEFAULT_LIMITER, nova_auth_rate_limit).
 -define(DEFAULT_LIMIT, 10).
 -define(DEFAULT_WINDOW, 60000).
 
@@ -72,13 +70,14 @@ pre_request(_Req, _Env, #{key_fun := _}, _PluginState) ->
     error({removed_option, key_fun});
 pre_request(Req, _Env, Options, PluginState) ->
     #{
-        limiter := LimiterName,
         limit := Limit,
         window := Window,
         algorithm := Algorithm,
         key := KeySpec
     } = maps:merge(defaults(), Options),
-    ensure_limiter(LimiterName, #{algorithm => Algorithm, limit => Limit, window => Window}),
+    Settings = #{algorithm => Algorithm, limit => Limit, window => Window},
+    LimiterName = limiter_name(Options, Settings),
+    ok = ensure_limiter(LimiterName, Settings),
     case seki:check(LimiterName, rate_limit_key(KeySpec, Req)) of
         {allow, #{remaining := Remaining}} ->
             Req1 = cowboy_req:set_resp_header(
@@ -117,12 +116,21 @@ plugin_info() ->
 
 defaults() ->
     #{
-        limiter => ?DEFAULT_LIMITER,
         limit => ?DEFAULT_LIMIT,
         window => ?DEFAULT_WINDOW,
         algorithm => sliding_window,
         key => peer
     }.
+
+limiter_name(#{limiter := Name}, _Settings) ->
+    Name;
+limiter_name(_Options, Settings) ->
+    %% Settings come from route configuration, never from a request, so the
+    %% atoms made here are bounded by the configured route groups.
+    %% elp:ignore W0023 - bounded by route configuration
+    binary_to_atom(
+        <<"nova_auth_rate_limit_", (integer_to_binary(erlang:phash2(Settings)))/binary>>
+    ).
 
 ensure_limiter(Name, Settings) ->
     case persistent_term:get({?MODULE, Name}, undefined) of
@@ -135,22 +143,7 @@ ensure_limiter(Name, Settings) ->
             end,
             persistent_term:put({?MODULE, Name}, Settings);
         Existing ->
-            warn_settings_mismatch(Name, Existing, Settings)
-    end.
-
-warn_settings_mismatch(Name, Existing, Requested) ->
-    WarnedKey = {?MODULE, warned, Name, Requested},
-    case persistent_term:get(WarnedKey, false) of
-        true ->
-            ok;
-        false ->
-            ?LOG_WARNING(#{
-                msg => ~"nova_auth_rate_limit limiter keeps its first settings",
-                limiter => Name,
-                settings => Existing,
-                ignored => Requested
-            }),
-            persistent_term:put(WarnedKey, true)
+            error({limiter_settings_conflict, Name, Existing, Settings})
     end.
 
 rate_limit_key(peer, Req) ->
