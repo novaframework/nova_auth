@@ -58,8 +58,38 @@ Seki supports four rate limiting algorithms:
 ## Custom Rate Limit Keys
 
 By default, rate limiting is per client IP (`cowboy_req:peer/1`). Behind a
-reverse proxy that is the proxy's address, so derive the key from a header
-the proxy sets and clients cannot forge.
+reverse proxy that is the proxy's address, so every client shares one bucket.
+
+### Behind a reverse proxy
+
+List the proxies in the `nova_auth` application env and use
+`nova_auth_rate_limit:client_ip/1` as the key:
+
+```erlang
+%% sys.config
+{nova_auth, [
+    {trusted_proxies, [
+        {10, 0, 0, 5},                          % exact address
+        {{10, 0, 0, 0}, 8},                     % CIDR range
+        {{16#fd00, 0, 0, 0, 0, 0, 0, 0}, 8}     % IPv6 CIDR range
+    ]}
+]}
+```
+
+```erlang
+{pre_request, nova_auth_rate_limit, #{key => {nova_auth_rate_limit, client_ip}}}
+```
+
+`client_ip/1` returns the peer address unless the peer is a trusted proxy.
+For a trusted peer it reads `X-Forwarded-For` from the right, skips trusted
+proxies, and returns the first address that is not one. The leftmost entry
+is whatever the client sent, so it is only used when every hop to its right
+is trusted. An entry that is not a bare IP address (for example one with a
+port) stops the walk and the last trusted hop is returned. With no
+`trusted_proxies` (the default), `client_ip/1` is the peer address and the
+header is ignored.
+
+### Per-user keys
 
 Nova runs `pre_request` plugins before the route's security function, so
 `auth_data` is not in the request yet. Read the actor from the session
@@ -77,7 +107,7 @@ instead:
 key(Req) ->
     case nova_auth_actor:fetch(Req) of
         {ok, #{id := UserId}} -> {user, UserId};
-        {error, not_found} -> {ip, element(1, cowboy_req:peer(Req))}
+        {error, not_found} -> {ip, nova_auth_rate_limit:client_ip(Req)}
     end.
 ```
 

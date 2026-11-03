@@ -29,7 +29,8 @@ Every option is optional; `#{}` gives the defaults.
 - `window`: window in milliseconds (default: 60000)
 - `algorithm`: Seki algorithm (default: `sliding_window`)
 - `key`: `{Module, Function}`; `Module:Function(Req)` returns the rate
-  limit key (default: the peer IP address)
+  limit key (default: the peer IP address). Behind a reverse proxy use
+  `{nova_auth_rate_limit, client_ip}`, see `client_ip/1`.
 
 Without `limiter`, the name is derived from `limit`, `window` and
 `algorithm`: route groups with the same settings share counters and groups
@@ -47,6 +48,7 @@ The `key_fun` option of earlier releases is rejected with
 -behaviour(nova_plugin).
 
 -export([init/0, stop/1, pre_request/4, post_request/4, plugin_info/0]).
+-export([client_ip/1]).
 
 -type reply() :: {reply, 429, #{binary() => binary()}, binary()}.
 
@@ -110,6 +112,36 @@ plugin_info() ->
         url => <<"https://github.com/novaframework/nova_auth">>
     }.
 
+-doc """
+Rate-limit key for clients behind trusted reverse proxies.
+
+Use it as `key => {nova_auth_rate_limit, client_ip}`. Returns the peer
+address unless the peer is listed in the `nova_auth` application env
+`trusted_proxies`. For a trusted peer it walks `X-Forwarded-For` from the
+right, skips addresses that are trusted proxies, and returns the first
+address that is not. The leftmost entry is never trusted for being leftmost:
+a client can put anything there. If an entry does not parse as a bare IP
+address, the last trusted hop is returned.
+
+`trusted_proxies` is a list of exact addresses (`{10, 0, 0, 1}`) and CIDR
+ranges (`{{10, 0, 0, 0}, 8}`), IPv4 or IPv6. It defaults to `[]`, which
+makes `client_ip/1` the peer address. Any other entry raises
+`error({invalid_option, trusted_proxies, Entry})`.
+
+```erlang
+{nova_auth, [{trusted_proxies, [{{10, 0, 0, 0}, 8}, {0, 0, 0, 0, 0, 0, 0, 1}]}]}
+```
+""".
+-spec client_ip(cowboy_req:req()) -> inet:ip_address().
+client_ip(Req) ->
+    {Peer, _Port} = cowboy_req:peer(Req),
+    Trusted = application:get_env(nova_auth, trusted_proxies, []),
+    PeerIP = unmap_ipv4(Peer),
+    case is_trusted(PeerIP, Trusted) of
+        true -> forwarded_client(forwarded_for(Req), PeerIP, Trusted);
+        false -> PeerIP
+    end.
+
 %%----------------------------------------------------------------------
 %% Internal
 %%----------------------------------------------------------------------
@@ -145,6 +177,77 @@ ensure_limiter(Name, Settings) ->
         Existing ->
             error({limiter_settings_conflict, Name, Existing, Settings})
     end.
+
+forwarded_for(Req) ->
+    case cowboy_req:header(~"x-forwarded-for", Req) of
+        undefined -> [];
+        Value -> lists:reverse(binary:split(Value, ~",", [global]))
+    end.
+
+forwarded_client([], LastTrusted, _Trusted) ->
+    LastTrusted;
+forwarded_client([Hop | Hops], LastTrusted, Trusted) ->
+    case hop_address(Hop) of
+        {ok, Addr} ->
+            IP = unmap_ipv4(Addr),
+            case is_trusted(IP, Trusted) of
+                true -> forwarded_client(Hops, IP, Trusted);
+                false -> IP
+            end;
+        {error, _} ->
+            LastTrusted
+    end.
+
+hop_address(Hop) ->
+    case string:trim(Hop) of
+        Trimmed when is_binary(Trimmed) -> inet:parse_strict_address(binary_to_list(Trimmed));
+        _ -> {error, einval}
+    end.
+
+is_trusted(IP, Trusted) ->
+    lists:any(fun(Entry) -> trusted_entry(IP, Entry) end, Trusted).
+
+trusted_entry(IP, {Net, Len} = Entry) when is_tuple(Net), is_integer(Len) ->
+    case ip_bits(Net) of
+        {NetInt, Bits} when Len >= 0, Len =< Bits ->
+            case ip_bits(IP) of
+                {IPInt, Bits} -> IPInt bsr (Bits - Len) =:= NetInt bsr (Bits - Len);
+                _ -> false
+            end;
+        _ ->
+            error({invalid_option, trusted_proxies, Entry})
+    end;
+trusted_entry(IP, Entry) when is_tuple(Entry) ->
+    case ip_bits(Entry) of
+        {_, _} -> unmap_ipv4(Entry) =:= IP;
+        error -> error({invalid_option, trusted_proxies, Entry})
+    end;
+trusted_entry(_IP, Entry) ->
+    error({invalid_option, trusted_proxies, Entry}).
+
+ip_bits({A, B, C, D} = IP) ->
+    case inet:is_ip_address(IP) of
+        true ->
+            <<N:32>> = <<A, B, C, D>>,
+            {N, 32};
+        false ->
+            error
+    end;
+ip_bits({A, B, C, D, E, F, G, H} = IP) ->
+    case inet:is_ip_address(IP) of
+        true ->
+            <<N:128>> = <<A:16, B:16, C:16, D:16, E:16, F:16, G:16, H:16>>,
+            {N, 128};
+        false ->
+            error
+    end;
+ip_bits(_) ->
+    error.
+
+unmap_ipv4({0, 0, 0, 0, 0, 16#FFFF, AB, CD}) ->
+    {AB bsr 8, AB band 255, CD bsr 8, CD band 255};
+unmap_ipv4(IP) ->
+    IP.
 
 rate_limit_key(peer, Req) ->
     {IP, _Port} = cowboy_req:peer(Req),
