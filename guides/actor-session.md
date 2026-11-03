@@ -42,11 +42,10 @@ The `provider` field identifies how the user authenticated. Common values:
 
 ## API
 
-### Renew and store (sign-in)
+### Sign in
 
 ```erlang
-{ok, Req1} = nova_auth_actor:renew(Req),
-ok = nova_auth_actor:store(Req1, #{
+{ok, Req1} = nova_auth_actor:sign_in(Req, #{
     id => ~"abc123",
     provider => password,
     email => ~"user@example.com"
@@ -54,11 +53,13 @@ ok = nova_auth_actor:store(Req1, #{
 {redirect, ~"/", Req1}.
 ```
 
+`sign_in/2` calls `renew/1` and then `store/2` with the renewed request.
 `renew/1` deletes the current session's data and moves the client to a new
 session id. Call it at every privilege change (sign-in, sign-out, password
 change) so a session id planted or observed before that point stops working
-(session fixation). Store the actor with the returned request: it carries
-the new session id.
+(session fixation). Return the request `sign_in/2` gives back: it carries
+the new session id. `store/2` on its own keeps the current session id, so
+use `sign_in/2` to log a user in.
 
 `renew/1` delegates to `nova_session:renew/1` (Nova 0.19 and later), and
 Nova issues the new `session_id` cookie with the response. Cookie flags are
@@ -134,8 +135,7 @@ was used:
 
 ```erlang
 %% Password login renews the session and stores the actor
-{ok, Req1} = nova_auth_actor:renew(Req),
-ok = nova_auth_actor:store(Req1, #{id => UserId, provider => password, ...}).
+{ok, Req1} = nova_auth_actor:sign_in(Req, #{id => UserId, provider => password, ...}).
 
 %% OIDC callback stores actor (done by nova_auth_oidc_controller)
 ok = nova_auth_actor:store(Req, #{id => Sub, provider => authentik, ...}).

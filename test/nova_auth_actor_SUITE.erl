@@ -8,7 +8,8 @@
     fetch_does_not_create_atoms/1,
     fetch_rejects_non_actor_terms/1,
     fetch_rejects_corrupt_binary/1,
-    renew_moves_to_new_empty_session/1
+    renew_moves_to_new_empty_session/1,
+    sign_in_renews_then_stores/1
 ]).
 
 all() ->
@@ -17,7 +18,8 @@ all() ->
         fetch_does_not_create_atoms,
         fetch_rejects_non_actor_terms,
         fetch_rejects_corrupt_binary,
-        renew_moves_to_new_empty_session
+        renew_moves_to_new_empty_session,
+        sign_in_renews_then_stores
     ].
 
 init_per_suite(Config) ->
@@ -77,6 +79,18 @@ renew_moves_to_new_empty_session(_Config) ->
     ?assertEqual({error, not_found}, nova_auth_actor:fetch(Req1)),
     ok = nova_auth_actor:store(Req1, #{id => 2, provider => password}),
     ?assertMatch({ok, #{id := 2}}, nova_auth_actor:fetch(Req1)),
+    ?assertEqual({error, not_found}, nova_auth_actor:fetch(Req)).
+
+sign_in_renews_then_stores(_Config) ->
+    OldId = ~"sid-sign-in",
+    Req = req(OldId),
+    ok = nova_session:set(Req, ~"planted", ~"value"),
+    Actor = #{id => 7, provider => password},
+    {ok, Req1} = nova_auth_actor:sign_in(Req, Actor),
+    #{nova_session_id := NewId} = Req1,
+    ?assertNotEqual(OldId, NewId),
+    ?assertEqual([], test_session_backend:keys(OldId)),
+    ?assertEqual({ok, Actor}, nova_auth_actor:fetch(Req1)),
     ?assertEqual({error, not_found}, nova_auth_actor:fetch(Req)).
 
 req(SessionId) ->

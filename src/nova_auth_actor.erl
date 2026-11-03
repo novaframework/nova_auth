@@ -4,16 +4,36 @@ Generic session actor storage. Stores and retrieves actor maps from
 Nova's ETS session. Both password auth and OIDC write here, providing
 a unified downstream experience for security callbacks and policies.
 
-Call `renew/1` before `store/2` at sign-in, and at sign-out, so a session
-id planted or observed before the privilege change stops working
-(session fixation).
+Sign in with `sign_in/2`, which renews the session before storing the
+actor, and sign out with `renew/1`, so a session id planted or observed
+before the privilege change stops working (session fixation).
 """.
 
--export([store/2, fetch/1, delete/1, renew/1, session_key/0]).
+-export([sign_in/2, store/2, fetch/1, delete/1, renew/1, session_key/0]).
 
 -define(SESSION_KEY, ~"nova_auth_actor").
 
--doc "Store an actor map in the Nova session.".
+-doc """
+Sign an actor in: move the client to a new session with `renew/1`, then
+store the actor in it.
+
+This is the way to log a user in. Return the request it gives back from the
+controller (for example `{redirect, Url, Req1}`): it carries the new
+session id.
+""".
+-spec sign_in(cowboy_req:req(), nova_auth:actor()) -> {ok, cowboy_req:req()} | {error, atom()}.
+sign_in(Req, Actor) when is_map(Actor) ->
+    {ok, Req1} = renew(Req),
+    case store(Req1, Actor) of
+        ok -> {ok, Req1};
+        {error, _} = Err -> Err
+    end.
+
+-doc """
+Store an actor map in the Nova session.
+
+`store/2` keeps the current session id; use `sign_in/2` to log a user in.
+""".
 -spec store(cowboy_req:req(), nova_auth:actor()) -> ok | {error, atom()}.
 store(Req, Actor) when is_map(Actor) ->
     nova_session:set(Req, ?SESSION_KEY, term_to_binary(Actor)).

@@ -57,14 +57,14 @@ profile(#{auth_data := Actor} = _Req) ->
 
 ### Store an actor manually
 
-If you have your own authentication logic, store the actor directly. Renew
-the session first, so a session id that was planted or observed before
-sign-in stops working (session fixation), and store the actor with the
-renewed request, which carries the new session id:
+If you have your own authentication logic, sign the actor in with
+`sign_in/2`. It renews the session first, so a session id that was planted
+or observed before sign-in stops working (session fixation), and stores the
+actor in the new session. Return the request it gives back, which carries
+the new session id:
 
 ```erlang
-{ok, Req1} = nova_auth_actor:renew(Req),
-ok = nova_auth_actor:store(Req1, #{
+{ok, Req1} = nova_auth_actor:sign_in(Req, #{
     id => ~"user-123",
     provider => my_custom_auth,
     email => ~"user@example.com",
@@ -212,17 +212,19 @@ handle_register(Req) ->
     Params = json:decode(Body),
     case nova_auth_accounts:register(my_auth, fun my_user:registration_changeset/2, Params) of
         {ok, User} ->
-            {ok, Req2} = nova_auth_actor:renew(Req1),
-            ok = nova_auth_actor:store(Req2, #{
-                id => maps:get(id, User),
-                provider => password,
-                email => maps:get(email, User)
-            }),
-            {json, 201, #{}, Req2, #{~"id" => maps:get(id, User)}};
+            {ok, Token} = nova_auth_confirm:generate_confirm_token(my_auth, User),
+            ok = my_mailer:send_confirmation(maps:get(email, User), Token),
+            {json, 201, #{}, #{~"id" => maps:get(id, User)}};
         {error, Changeset} ->
             {json, 422, #{}, #{~"errors" => kura_changeset:errors(Changeset)}}
     end.
 ```
+
+The handler does not sign the new user in. With `require_confirmed => true`,
+`authenticate/3` refuses users who have not confirmed, and signing them in
+straight after registration would skip that check. Without
+`require_confirmed` you can sign in here with `nova_auth_actor:sign_in/2`,
+as the login handler does.
 
 ### Login
 
@@ -232,13 +234,14 @@ handle_login(Req) ->
     #{~"email" := Email, ~"password" := Password} = json:decode(Body),
     case nova_auth_accounts:authenticate(my_auth, Email, Password) of
         {ok, User} ->
-            {ok, Req2} = nova_auth_actor:renew(Req1),
-            ok = nova_auth_actor:store(Req2, #{
+            {ok, Req2} = nova_auth_actor:sign_in(Req1, #{
                 id => maps:get(id, User),
                 provider => password,
                 email => maps:get(email, User)
             }),
             {json, 200, #{}, Req2, #{~"user_id" => maps:get(id, User)}};
+        {error, unconfirmed} ->
+            {json, 403, #{}, #{~"error" => ~"confirm your email first"}};
         {error, invalid_credentials} ->
             {json, 401, #{}, #{~"error" => ~"invalid credentials"}}
     end.

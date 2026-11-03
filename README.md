@@ -77,10 +77,10 @@ Register and authenticate:
     my_auth, fun my_user:registration_changeset/2, Params
 ).
 
-%% Authenticate, renew the session (prevents session fixation), store the actor
+%% Authenticate and sign in: sign_in/2 renews the session (prevents session
+%% fixation) and stores the actor in the new one
 {ok, User} = nova_auth_accounts:authenticate(my_auth, ~"user@example.com", ~"password123456").
-{ok, Req1} = nova_auth_actor:renew(Req).
-ok = nova_auth_actor:store(Req1, #{id => maps:get(id, User), provider => password, email => maps:get(email, User)}).
+{ok, Req1} = nova_auth_actor:sign_in(Req, #{id => maps:get(id, User), provider => password, email => maps:get(email, User)}).
 
 %% Session token (database-backed)
 {ok, Token} = nova_auth_session:generate_session_token(my_auth, User).
