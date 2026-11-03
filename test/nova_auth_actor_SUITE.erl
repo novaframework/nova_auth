@@ -84,9 +84,13 @@ renew_moves_to_new_empty_session(_Config) ->
     ok = nova_auth_actor:store(Req1, #{id => 2, provider => password}),
     ?assertMatch({ok, #{id := 2}}, nova_auth_actor:fetch(Req1)),
     ?assertEqual({error, not_found}, nova_auth_actor:fetch(Req)),
-    ?assertEqual(NewId, cookie_value(Req1)).
+    case nova_has_renew() of
+        true -> ok;
+        false -> ?assertEqual(NewId, cookie_value(Req1))
+    end.
 
 renew_cookie_has_flags(_Config) ->
+    skip_if_nova_has_renew(),
     {ok, Req1} = nova_auth_actor:renew(req(~"sid-flags")),
     Cookie = set_cookie(Req1),
     ?assertNotEqual(nomatch, string:find(Cookie, ~"; Path=/")),
@@ -95,11 +99,13 @@ renew_cookie_has_flags(_Config) ->
     ?assertEqual(nomatch, string:find(Cookie, ~"; Secure")).
 
 renew_cookie_secure_on_https(_Config) ->
+    skip_if_nova_has_renew(),
     Req = (req(~"sid-https"))#{scheme => ~"https"},
     {ok, Req1} = nova_auth_actor:renew(Req),
     ?assertNotEqual(nomatch, string:find(set_cookie(Req1), ~"; Secure")).
 
 renew_cookie_honours_nova_cookie_opts(_Config) ->
+    skip_if_nova_has_renew(),
     ok = application:set_env(nova, session_cookie_opts, #{secure => true, same_site => strict}),
     try
         {ok, Req1} = nova_auth_actor:renew(req(~"sid-opts")),
@@ -125,6 +131,16 @@ cookie_value(Req) ->
     [Pair | _] = binary:split(set_cookie(Req), ~";"),
     [_, Value] = binary:split(Pair, ~"="),
     Value.
+
+nova_has_renew() ->
+    _ = code:ensure_loaded(nova_session),
+    erlang:function_exported(nova_session, renew, 1).
+
+skip_if_nova_has_renew() ->
+    case nova_has_renew() of
+        true -> throw({skip, ~"nova_session:renew/1 writes the cookie in nova_stream_h"});
+        false -> ok
+    end.
 
 small_atom_ext(Name) ->
     <<131, 119, (byte_size(Name)), Name/binary>>.
