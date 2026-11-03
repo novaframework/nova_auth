@@ -96,8 +96,7 @@ delete_session_token(AuthMod, SessionToken) ->
 delete_all_user_tokens(AuthMod, UserId) ->
     #{repo := Repo, token_schema := TokenSchema} = nova_auth:config(AuthMod),
     Q = kura_query:where(kura_query:from(TokenSchema), {user_id, UserId}),
-    _ = kura_repo_worker:delete_all(Repo, Q),
-    ok.
+    nova_auth_refresh:delete_user_tokens(Repo, UserId, Q).
 
 -doc "Delete all tokens for a user within a specific context.".
 -spec delete_all_user_tokens(module(), term(), binary()) -> ok.

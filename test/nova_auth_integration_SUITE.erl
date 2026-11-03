@@ -37,7 +37,10 @@
     test_register_error_has_no_password/1,
     test_change_password_error_has_no_password/1,
     test_refresh_failed_mint_keeps_token/1,
-    test_reset_claim_error_is_not_not_found/1
+    test_reset_claim_error_is_not_not_found/1,
+    test_revoke_all_during_refresh/1,
+    test_revoke_family_during_refresh/1,
+    test_delete_all_user_tokens_during_refresh/1
 ]).
 
 all() ->
@@ -70,7 +73,10 @@ all() ->
         test_register_error_has_no_password,
         test_change_password_error_has_no_password,
         test_refresh_failed_mint_keeps_token,
-        test_reset_claim_error_is_not_not_found
+        test_reset_claim_error_is_not_not_found,
+        test_revoke_all_during_refresh,
+        test_revoke_family_during_refresh,
+        test_delete_all_user_tokens_during_refresh
     ].
 
 init_per_suite(Config) ->
@@ -472,6 +478,76 @@ test_reset_claim_error_is_not_not_found(_Config) ->
         ?assertNotEqual({error, not_found}, Result)
     end),
     ?assertMatch({ok, _}, nova_auth_reset:reset_password(test_auth_config, Token, Params)).
+
+test_revoke_all_during_refresh(_Config) ->
+    {ok, #{access_token := Access, refresh_token := Refresh}} =
+        refresh_during(<<"revoke-all-race@example.com">>, fun(User, _Refresh) ->
+            nova_auth_refresh:revoke_all(test_auth_config, maps:get(id, User))
+        end),
+    ?assertEqual({error, invalid_refresh}, nova_auth_refresh:refresh(test_auth_config, Refresh)),
+    ?assertEqual(
+        {error, not_found}, nova_auth_refresh:get_user_by_access_token(test_auth_config, Access)
+    ).
+
+test_revoke_family_during_refresh(_Config) ->
+    {ok, #{refresh_token := Refresh}} =
+        refresh_during(<<"revoke-family-race@example.com">>, fun(_User, Old) ->
+            nova_auth_refresh:revoke_family(test_auth_config, Old)
+        end),
+    ?assertEqual({error, invalid_refresh}, nova_auth_refresh:refresh(test_auth_config, Refresh)).
+
+test_delete_all_user_tokens_during_refresh(_Config) ->
+    {ok, #{access_token := Access, refresh_token := Refresh}} =
+        refresh_during(<<"password-race@example.com">>, fun(User, _Refresh) ->
+            nova_auth_session:delete_all_user_tokens(test_auth_config, maps:get(id, User))
+        end),
+    ?assertEqual({error, invalid_refresh}, nova_auth_refresh:refresh(test_auth_config, Refresh)),
+    ?assertEqual(
+        {error, not_found}, nova_auth_refresh:get_user_by_access_token(test_auth_config, Access)
+    ).
+
+refresh_during(Email, Revoke) ->
+    cleanup_users(),
+    {ok, User} = register_user(Email, <<"password123456">>),
+    {ok, #{refresh_token := Refresh}} = nova_auth_refresh:generate_pair(test_auth_config, User),
+    Self = self(),
+    Ref = make_ref(),
+    with_slow_inserts(fun() ->
+        _ = spawn_link(fun() ->
+            Self ! {Ref, nova_auth_refresh:refresh(test_auth_config, Refresh)}
+        end),
+        timer:sleep(150),
+        ok = Revoke(User, Refresh),
+        receive
+            {Ref, Result} -> Result
+        after 10000 -> error(timeout)
+        end
+    end).
+
+with_slow_inserts(Fun) ->
+    kura_repo_worker:pgo_query(
+        test_auth_repo,
+        <<
+            "CREATE OR REPLACE FUNCTION nova_auth_test_slow() RETURNS trigger AS $$ "
+            "BEGIN PERFORM pg_sleep(0.5); RETURN NEW; END $$ LANGUAGE plpgsql"
+        >>,
+        []
+    ),
+    kura_repo_worker:pgo_query(
+        test_auth_repo,
+        <<
+            "CREATE TRIGGER nova_auth_test_slow BEFORE INSERT ON user_tokens "
+            "FOR EACH ROW EXECUTE FUNCTION nova_auth_test_slow()"
+        >>,
+        []
+    ),
+    try
+        Fun()
+    after
+        kura_repo_worker:pgo_query(
+            test_auth_repo, <<"DROP TRIGGER IF EXISTS nova_auth_test_slow ON user_tokens">>, []
+        )
+    end.
 
 with_trigger(Event, Fun) ->
     kura_repo_worker:pgo_query(

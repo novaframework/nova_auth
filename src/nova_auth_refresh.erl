@@ -22,6 +22,14 @@ expires. This is deliberate. A refresh token presented twice may have been
 stolen, and revoking the family is the reuse detection of RFC 6819
 (section 5.2.2.3).
 
+A refresh and `revoke_all/2`, `revoke_family/2` or a password change for the
+same user are serialised with a per-user transaction-scoped advisory lock
+(Postgres), so a revoke never misses a pair that a refresh in flight is about
+to insert. If you call `refresh/2` inside your own transaction, the claim and
+the mint join it and the lock is held until it ends. A failed mint then does
+not undo the claim: your transaction commits it unless you roll back, and the
+presented refresh token is spent.
+
 Requires the configured `token_schema` to have `family_id` (string) and
 `used_at` (utc_datetime) fields in addition to the session-token fields,
 and the table needs an index on `family_id`: `revoke_family/2` and reuse
@@ -37,7 +45,8 @@ Tokens are stored hashed via `nova_auth_token`.
     refresh/2,
     revoke_family/2,
     revoke_all/2,
-    delete_access_token/2
+    delete_access_token/2,
+    delete_user_tokens/3
 ]).
 
 -define(ACCESS, <<"access">>).
@@ -102,8 +111,10 @@ refresh(_AuthMod, _RawRefresh) ->
 revoke_family(AuthMod, RawRefresh) when is_binary(RawRefresh) ->
     #{repo := Repo, token_schema := Schema} = Cfg = nova_auth:config(AuthMod),
     case one_by_token(Repo, Schema, RawRefresh, ?REFRESH) of
-        {ok, Row} -> revoke_family_id(Cfg, maps:get(family_id, Row, undefined));
-        none -> ok
+        {ok, Row} ->
+            revoke_family_id(Cfg, maps:get(user_id, Row), maps:get(family_id, Row, undefined));
+        none ->
+            ok
     end;
 revoke_family(_AuthMod, _RawRefresh) ->
     ok.
@@ -112,9 +123,7 @@ revoke_family(_AuthMod, _RawRefresh) ->
 -spec revoke_all(module(), term()) -> ok.
 revoke_all(AuthMod, UserId) ->
     #{repo := Repo, token_schema := Schema} = nova_auth:config(AuthMod),
-    Q = kura_query:where(kura_query:from(Schema), {user_id, UserId}),
-    _ = kura_repo_worker:delete_all(Repo, Q),
-    ok.
+    delete_user_tokens(Repo, UserId, kura_query:where(kura_query:from(Schema), {user_id, UserId})).
 
 -doc "Delete a single access token (logout of one device).".
 -spec delete_access_token(module(), binary()) -> ok.
@@ -157,6 +166,7 @@ rotate(#{repo := Repo, token_schema := Schema} = Cfg, Row) ->
         {used_at, is_nil}
     ),
     ClaimAndMint = fun() ->
+        ok = lock_user_tokens(Repo, maps:get(user_id, Row)),
         case kura_repo_worker:update_all(Repo, Claim, #{used_at => calendar:universal_time()}) of
             {ok, 1} ->
                 case mint_pair(Cfg, maps:get(user_id, Row), maps:get(family_id, Row, undefined)) of
@@ -184,7 +194,7 @@ rotate(#{repo := Repo, token_schema := Schema} = Cfg, Row) ->
 
 -spec reuse_detected(map(), map()) -> {error, reuse_detected}.
 reuse_detected(Cfg, Row) ->
-    ok = revoke_family_id(Cfg, maps:get(family_id, Row, undefined)),
+    ok = revoke_family_id(Cfg, maps:get(user_id, Row), maps:get(family_id, Row, undefined)),
     {error, reuse_detected}.
 
 -spec mint_pair(map(), term(), binary() | undefined) -> {ok, tokens()} | {error, term()}.
@@ -243,13 +253,42 @@ q_by_token(Schema, Hash, Context) ->
         {context, Context}
     ).
 
--spec revoke_family_id(map(), binary() | undefined) -> ok.
-revoke_family_id(_Cfg, undefined) ->
+-spec revoke_family_id(map(), term(), binary() | undefined) -> ok.
+revoke_family_id(_Cfg, _UserId, undefined) ->
     ok;
-revoke_family_id(#{repo := Repo, token_schema := Schema}, Family) ->
-    Q = kura_query:where(kura_query:from(Schema), {family_id, Family}),
-    _ = kura_repo_worker:delete_all(Repo, Q),
+revoke_family_id(#{repo := Repo, token_schema := Schema}, UserId, Family) ->
+    delete_user_tokens(
+        Repo, UserId, kura_query:where(kura_query:from(Schema), {family_id, Family})
+    ).
+
+-doc false.
+-spec delete_user_tokens(module(), term(), #kura_query{}) -> ok.
+delete_user_tokens(Repo, UserId, Query) ->
+    _ = kura_repo_worker:transaction(Repo, fun() ->
+        ok = lock_user_tokens(Repo, UserId),
+        kura_repo_worker:delete_all(Repo, Query)
+    end),
     ok.
+
+%% A refresh holds this lock from the claim until its new pair is inserted,
+%% and a revoke takes it before deleting. Without it a revoke's DELETE waits
+%% on the claimed row, then misses the pair inserted after its snapshot.
+%% Transaction-scoped Postgres advisory lock per user; SQLite serialises
+%% writers already, so other dialects skip it.
+-spec lock_user_tokens(module(), term()) -> ok.
+lock_user_tokens(Repo, UserId) ->
+    case kura_query_compiler:dialect(Repo) of
+        kura_dialect_pg ->
+            Key = iolist_to_binary(io_lib:format("nova_auth_tokens:~0p", [UserId])),
+            {ok, _} = kura_repo_worker:query(
+                Repo, ~"SELECT 1 AS locked FROM pg_advisory_xact_lock(hashtextextended($1, 0))", [
+                    Key
+                ]
+            ),
+            ok;
+        _ ->
+            ok
+    end.
 
 -spec delete_by_token(map(), binary()) -> ok.
 delete_by_token(#{repo := Repo, token_schema := Schema}, Token) ->
