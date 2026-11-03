@@ -7,7 +7,8 @@
     config_returns_defaults/1,
     config_caches_in_persistent_term/1,
     config_key_lookup/1,
-    invalidate_cache_clears/1
+    invalidate_cache_clears/1,
+    unsupported_hash_algorithm_raises/1
 ]).
 
 all() ->
@@ -19,7 +20,8 @@ groups() ->
             config_returns_defaults,
             config_caches_in_persistent_term,
             config_key_lookup,
-            invalidate_cache_clears
+            invalidate_cache_clears,
+            unsupported_hash_algorithm_raises
         ]}
     ].
 
@@ -78,3 +80,10 @@ invalidate_cache_clears(_Config) ->
     _Cfg = nova_auth:config(test_auth_config),
     nova_auth:invalidate_cache(test_auth_config),
     ?assertEqual(undefined, persistent_term:get({nova_auth, test_auth_config}, undefined)).
+
+unsupported_hash_algorithm_raises(_Config) ->
+    nova_auth:invalidate_cache(test_auth_config_bcrypt),
+    ?assertError(
+        {unsupported_hash_algorithm, bcrypt}, nova_auth:config(test_auth_config_bcrypt)
+    ),
+    ?assertEqual(undefined, persistent_term:get({nova_auth, test_auth_config_bcrypt}, undefined)).

@@ -35,11 +35,16 @@ nova_auth_session, etc.). OIDC-only applications can omit them entirely.
         session_validity_days => pos_integer(),
         confirm_validity_days => pos_integer(),
         reset_validity_hours => pos_integer(),
-        hash_algorithm => pbkdf2_sha256 | bcrypt | argon2,
+        hash_algorithm => pbkdf2_sha256,
         token_bytes => pos_integer()
     }.
 
--doc "Return the merged auth configuration for `Mod`, caching in persistent_term.".
+-doc """
+Return the merged auth configuration for `Mod`, caching in persistent_term.
+
+`hash_algorithm` only accepts `pbkdf2_sha256`; any other value raises
+`error({unsupported_hash_algorithm, Algorithm})`.
+""".
 -spec config(module()) -> map().
 config(Mod) ->
     case persistent_term:get({nova_auth, Mod}, undefined) of
@@ -57,6 +62,7 @@ config(Mod) ->
                 token_bytes => ?NOVA_AUTH_DEFAULT_TOKEN_BYTES
             },
             Merged = maps:merge(Defaults, Cfg),
+            ok = check_hash_algorithm(maps:get(hash_algorithm, Merged)),
             persistent_term:put({nova_auth, Mod}, Merged),
             Merged;
         Cfg ->
@@ -72,3 +78,8 @@ config(Mod, Key) ->
 -spec invalidate_cache(module()) -> true.
 invalidate_cache(Mod) ->
     persistent_term:erase({nova_auth, Mod}).
+
+check_hash_algorithm(pbkdf2_sha256) ->
+    ok;
+check_hash_algorithm(Algorithm) ->
+    error({unsupported_hash_algorithm, Algorithm}).

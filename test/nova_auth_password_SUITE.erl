@@ -9,7 +9,8 @@
     verify_wrong_password/1,
     dummy_verify_returns_false/1,
     hash_produces_unique_salts/1,
-    hash_format_is_pbkdf2/1
+    hash_format_is_pbkdf2/1,
+    unsupported_algorithms_raise/1
 ]).
 
 all() ->
@@ -23,7 +24,8 @@ groups() ->
             verify_wrong_password,
             dummy_verify_returns_false,
             hash_produces_unique_salts,
-            hash_format_is_pbkdf2
+            hash_format_is_pbkdf2,
+            unsupported_algorithms_raise
         ]}
     ].
 
@@ -54,3 +56,8 @@ hash_produces_unique_salts(_Config) ->
 hash_format_is_pbkdf2(_Config) ->
     Hashed = nova_auth_password:hash(<<"test">>),
     ?assertMatch(<<"$pbkdf2-sha256$", _/binary>>, Hashed).
+
+unsupported_algorithms_raise(_Config) ->
+    ?assertMatch(<<"$pbkdf2-sha256$", _/binary>>, nova_auth_password:hash(~"pw", pbkdf2_sha256)),
+    ?assertError({unsupported_hash_algorithm, bcrypt}, nova_auth_password:hash(~"pw", bcrypt)),
+    ?assertError({unsupported_hash_algorithm, argon2}, nova_auth_password:hash(~"pw", argon2)).
