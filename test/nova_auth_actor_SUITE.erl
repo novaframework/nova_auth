@@ -7,7 +7,11 @@
     store_and_fetch_roundtrip/1,
     fetch_does_not_create_atoms/1,
     fetch_rejects_non_actor_terms/1,
-    fetch_rejects_corrupt_binary/1
+    fetch_rejects_corrupt_binary/1,
+    renew_moves_to_new_empty_session/1,
+    renew_cookie_has_flags/1,
+    renew_cookie_secure_on_https/1,
+    renew_cookie_honours_nova_cookie_opts/1
 ]).
 
 all() ->
@@ -15,7 +19,11 @@ all() ->
         store_and_fetch_roundtrip,
         fetch_does_not_create_atoms,
         fetch_rejects_non_actor_terms,
-        fetch_rejects_corrupt_binary
+        fetch_rejects_corrupt_binary,
+        renew_moves_to_new_empty_session,
+        renew_cookie_has_flags,
+        renew_cookie_secure_on_https,
+        renew_cookie_honours_nova_cookie_opts
     ].
 
 init_per_suite(Config) ->
@@ -62,6 +70,46 @@ fetch_rejects_corrupt_binary(_Config) ->
     ok = nova_session:set(Req, nova_auth_actor:session_key(), ~"not an external term"),
     ?assertEqual({error, not_found}, nova_auth_actor:fetch(Req)).
 
+renew_moves_to_new_empty_session(_Config) ->
+    OldId = ~"sid-renew",
+    Req = req(OldId),
+    ok = nova_auth_actor:store(Req, #{id => 1, provider => password}),
+    ok = nova_session:set(Req, ~"other", ~"value"),
+    {ok, Req1} = nova_auth_actor:renew(Req),
+    #{nova_session_id := NewId} = Req1,
+    ?assertNotEqual(OldId, NewId),
+    ?assert(is_binary(NewId) andalso byte_size(NewId) >= 43),
+    ?assertEqual([], test_session_backend:keys(OldId)),
+    ?assertEqual({error, not_found}, nova_auth_actor:fetch(Req1)),
+    ok = nova_auth_actor:store(Req1, #{id => 2, provider => password}),
+    ?assertMatch({ok, #{id := 2}}, nova_auth_actor:fetch(Req1)),
+    ?assertEqual({error, not_found}, nova_auth_actor:fetch(Req)),
+    ?assertEqual(NewId, cookie_value(Req1)).
+
+renew_cookie_has_flags(_Config) ->
+    {ok, Req1} = nova_auth_actor:renew(req(~"sid-flags")),
+    Cookie = set_cookie(Req1),
+    ?assertNotEqual(nomatch, string:find(Cookie, ~"; Path=/")),
+    ?assertNotEqual(nomatch, string:find(Cookie, ~"; HttpOnly")),
+    ?assertNotEqual(nomatch, string:find(Cookie, ~"; SameSite=Lax")),
+    ?assertEqual(nomatch, string:find(Cookie, ~"; Secure")).
+
+renew_cookie_secure_on_https(_Config) ->
+    Req = (req(~"sid-https"))#{scheme => ~"https"},
+    {ok, Req1} = nova_auth_actor:renew(Req),
+    ?assertNotEqual(nomatch, string:find(set_cookie(Req1), ~"; Secure")).
+
+renew_cookie_honours_nova_cookie_opts(_Config) ->
+    ok = application:set_env(nova, session_cookie_opts, #{secure => true, same_site => strict}),
+    try
+        {ok, Req1} = nova_auth_actor:renew(req(~"sid-opts")),
+        Cookie = set_cookie(Req1),
+        ?assertNotEqual(nomatch, string:find(Cookie, ~"; Secure")),
+        ?assertNotEqual(nomatch, string:find(Cookie, ~"; SameSite=Strict"))
+    after
+        application:unset_env(nova, session_cookie_opts)
+    end.
+
 req(SessionId) ->
     #{
         nova_session_id => SessionId,
@@ -69,6 +117,14 @@ req(SessionId) ->
         headers => #{},
         resp_cookies => #{}
     }.
+
+set_cookie(#{resp_cookies := #{~"session_id" := Cookie}}) ->
+    iolist_to_binary(Cookie).
+
+cookie_value(Req) ->
+    [Pair | _] = binary:split(set_cookie(Req), ~";"),
+    [_, Value] = binary:split(Pair, ~"="),
+    Value.
 
 small_atom_ext(Name) ->
     <<131, 119, (byte_size(Name)), Name/binary>>.
