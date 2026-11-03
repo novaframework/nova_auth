@@ -42,15 +42,28 @@ The `provider` field identifies how the user authenticated. Common values:
 
 ## API
 
-### Store
+### Sign in
 
 ```erlang
-ok = nova_auth_actor:store(Req, #{
+{ok, Req1} = nova_auth_actor:sign_in(Req, #{
     id => ~"abc123",
     provider => password,
     email => ~"user@example.com"
-}).
+}),
+{redirect, ~"/", Req1}.
 ```
+
+`sign_in/2` calls `renew/1` and then `store/2` with the renewed request.
+`renew/1` deletes the current session's data and moves the client to a new
+session id. Call it at every privilege change (sign-in, sign-out, password
+change) so a session id planted or observed before that point stops working
+(session fixation). Return the request `sign_in/2` gives back: it carries
+the new session id. `store/2` on its own keeps the current session id, so
+use `sign_in/2` to log a user in.
+
+`renew/1` delegates to `nova_session:renew/1` (Nova 0.19 and later), and
+Nova issues the new `session_id` cookie with the response. Cookie flags are
+set through the `nova` application's `session_cookie_opts`.
 
 ### Fetch
 
@@ -61,11 +74,33 @@ case nova_auth_actor:fetch(Req) of
 end.
 ```
 
+### Fetch and stored data
+
+`fetch/1` decodes the stored actor with `binary_to_term(Bin, [safe])`, so it
+never creates atoms, and only returns a map with an `id` (binary or integer)
+and a `provider` atom. Anything else is `{error, not_found}`. With a session
+backend that survives node restarts, an actor whose atoms (for example
+`provider` or role atoms) are not loaded yet is treated as signed out.
+
 ### Delete (logout)
 
 ```erlang
-{ok, _Req} = nova_auth_actor:delete(Req).
+{ok, Req1} = nova_auth_actor:renew(Req).
 ```
+
+`renew/1` is the safest sign-out: it drops the whole session and its id.
+`nova_auth_actor:delete/1` only removes the actor key and keeps the session id.
+
+### The actor is a session copy
+
+The actor is a copy taken at sign-in. `nova_auth_accounts:change_password/4`,
+`change_identity/4` and `nova_auth_reset:reset_password/3` delete the user's
+database tokens, but they cannot reach actors stored in other sessions, so
+those sessions stay signed in as far as `nova_auth_security` is concerned.
+If other sessions must end when the password changes, also store the session
+token from `nova_auth_session:generate_session_token/2` in the session and
+check it with `nova_auth_session:get_user_by_session_token/2` on each request
+(or in your own security function), dropping the actor when it fails.
 
 ### Session Key
 
@@ -99,8 +134,8 @@ same session key. The security callback doesn't need to know which strategy
 was used:
 
 ```erlang
-%% Password login stores actor
-ok = nova_auth_actor:store(Req, #{id => UserId, provider => password, ...}).
+%% Password login renews the session and stores the actor
+{ok, Req1} = nova_auth_actor:sign_in(Req, #{id => UserId, provider => password, ...}).
 
 %% OIDC callback stores actor (done by nova_auth_oidc_controller)
 ok = nova_auth_actor:store(Req, #{id => Sub, provider => authentik, ...}).

@@ -13,7 +13,6 @@
 ]).
 
 %% Callback used by callback_mapping test
--export([test_mapping/1]).
 
 all() ->
     [{group, claims_tests}].
@@ -50,7 +49,9 @@ static_map_empty(_Config) ->
     ?assertEqual(#{}, nova_auth_claims:map(#{}, #{~"sub" => ~"abc"})).
 
 callback_mapping(_Config) ->
-    Result = nova_auth_claims:map({?MODULE, test_mapping}, #{~"sub" => ~"42", ~"role" => ~"admin"}),
+    Result = nova_auth_claims:map({test_claims_mapping, to_actor}, #{
+        ~"sub" => ~"42", ~"role" => ~"admin"
+    }),
     ?assertEqual(#{id => ~"42", role => admin}, Result).
 
 map3_merges_with_base(_Config) ->
@@ -68,6 +69,3 @@ map3_overwrites_base(_Config) ->
     Base = #{email => ~"old@example.com"},
     Result = nova_auth_claims:map(Mapping, Claims, Base),
     ?assertEqual(~"new@example.com", maps:get(email, Result)).
-
-test_mapping(#{~"sub" := Sub, ~"role" := Role}) ->
-    #{id => Sub, role => binary_to_atom(Role)}.

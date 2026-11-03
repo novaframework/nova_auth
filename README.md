@@ -2,7 +2,7 @@
 
 Authentication library for the [Nova](https://github.com/novaframework/nova) ecosystem.
 
-Provides a unified actor session, claims mapping, authorization policies, and optional password-based authentication. Works standalone or as the foundation for [nova_auth_oidc](https://github.com/Taure/nova_auth_oidc).
+Provides a unified actor session, claims mapping, authorization policies, and optional password-based authentication. Works standalone or as the foundation for [nova_auth_oidc](https://github.com/novaframework/nova_auth_oidc).
 
 ## Features
 
@@ -11,22 +11,32 @@ Provides a unified actor session, claims mapping, authorization policies, and op
 - **Security callbacks** -- Drop-in Nova security function for protecting route groups.
 - **Policy helpers** -- Composable authorization policies (role-based, claim-based, ownership, authenticated).
 - **Rate limiting** -- Nova plugin with configurable sliding-window rate limiting via Seki.
-- **Password auth** (optional, requires [Kura](https://github.com/Taure/kura)) -- PBKDF2-SHA256 hashing, session tokens, email confirmation, password reset.
+- **Password auth** (optional, requires [Kura](https://github.com/Taure/kura)) -- PBKDF2-SHA256 hashing, URL-safe session tokens, email confirmation, password reset.
 - **Timing-safe** -- Dummy verification on failed lookups to prevent user enumeration.
 
 ## Quick Start
 
-Add `nova_auth` to your deps:
+Add `nova_auth` to your deps (it is on [Hex](https://hex.pm/packages/nova_auth)):
 
 ```erlang
 {deps, [
-    {nova_auth, {git, "https://github.com/Taure/nova_auth.git", {branch, "main"}}}
+    {nova_auth, "~> 0.3.0"}
+]}.
+```
+
+Password auth also needs Kura and its Postgres backend in your own deps:
+
+```erlang
+{deps, [
+    {nova_auth, "~> 0.3.0"},
+    {kura, "~> 2.0"},
+    {kura_postgres, "~> 1.1"}
 ]}.
 ```
 
 ### OIDC-only (no database)
 
-If you only need actor sessions and policies (e.g., with [nova_auth_oidc](https://github.com/Taure/nova_auth_oidc)):
+If you only need actor sessions and policies (e.g., with [nova_auth_oidc](https://github.com/novaframework/nova_auth_oidc)):
 
 ```erlang
 %% Protect routes -- works with any auth strategy that stores an actor
@@ -63,13 +73,12 @@ Register and authenticate:
 
 ```erlang
 %% Register
-{ok, User} = nova_auth_accounts:register(
-    my_auth, fun my_user:registration_changeset/2, Params
-).
+{ok, User} = nova_auth_accounts:register(my_auth, Params).
 
-%% Authenticate and store actor in session
+%% Authenticate and sign in: sign_in/2 renews the session (prevents session
+%% fixation) and stores the actor in the new one
 {ok, User} = nova_auth_accounts:authenticate(my_auth, ~"user@example.com", ~"password123456").
-ok = nova_auth_actor:store(Req, #{id => maps:get(id, User), provider => password, email => maps:get(email, User)}).
+{ok, Req1} = nova_auth_actor:sign_in(Req, #{id => maps:get(id, User), provider => password, email => maps:get(email, User)}).
 
 %% Session token (database-backed)
 {ok, Token} = nova_auth_session:generate_session_token(my_auth, User).
@@ -112,8 +121,9 @@ Password auth options (all optional with defaults):
 | `session_validity_days` | `14` | Days before session tokens expire |
 | `confirm_validity_days` | `3` | Days before confirmation tokens expire |
 | `reset_validity_hours` | `1` | Hours before reset tokens expire |
-| `hash_algorithm` | `pbkdf2_sha256` | Password hashing algorithm |
+| `hash_algorithm` | `pbkdf2_sha256` | Password hashing algorithm; `pbkdf2_sha256` is the only one implemented, other values raise |
 | `token_bytes` | `32` | Random bytes for token generation |
+| `require_confirmed` | `false` | Refuse sign-in for users without `confirmed_at` (`{error, unconfirmed}`) |
 
 ## Guides
 
@@ -126,7 +136,7 @@ Password auth options (all optional with defaults):
 
 ## Related Libraries
 
-- [nova_auth_oidc](https://github.com/Taure/nova_auth_oidc) -- OIDC login, JWT bearer validation, token introspection, client credentials
+- [nova_auth_oidc](https://github.com/novaframework/nova_auth_oidc) -- OIDC login, JWT bearer validation, token introspection, client credentials
 - [Nova](https://github.com/novaframework/nova) -- Web framework
 - [Kura](https://github.com/Taure/kura) -- Database layer (optional)
 - [Seki](https://github.com/Taure/seki) -- Rate limiting
@@ -134,8 +144,55 @@ Password auth options (all optional with defaults):
 ## Requirements
 
 - Erlang/OTP 28+
-- PostgreSQL via Kura + pgo (only for password auth)
+- Nova 0.19+ (`nova_auth_actor:renew/1` delegates to `nova_session:renew/1`)
+- PostgreSQL via Kura and `kura_postgres` (only for password auth)
+
+## Upgrading from 0.2
+
+These changes can break an existing app:
+
+- **`hash_algorithm`:** `bcrypt` or `argon2` (or any value other than
+  `pbkdf2_sha256`) now raises `{unsupported_hash_algorithm, Value}` from
+  `nova_auth:config/1`. Set `hash_algorithm => pbkdf2_sha256` or remove it;
+  stored hashes are already PBKDF2 because bcrypt/argon2 silently fell back to it.
+- **`pbkdf2_iterations`:** a value that is not a positive integer now raises
+  `{invalid_pbkdf2_iterations, Value}`.
+- **`nova_auth_password:hash/2`:** the spec is `hash(binary(), atom())` and
+  only `pbkdf2_sha256` is accepted; other algorithms raise.
+- **Rate-limit options now take effect:** a route that passed only some
+  options used to crash the plugin (badmatch) on every request; missing
+  options now fall back to the defaults and the given ones apply, so those
+  routes start limiting (and replying 429) instead of failing.
+- **`key_fun` is deprecated:** `nova_auth_rate_limit` takes
+  `key => {Module, Function}`. `key_fun` still works and logs one warning
+  per route configuration; it will be removed in a later release.
+- **Token length:** new tokens are URL-safe base64 without padding, 43
+  characters for the default 32 bytes instead of 44. Tokens issued by 0.2
+  still verify. Widen any column or validation that expects 44 characters.
+- **Nova floor:** nova_auth now needs Nova 0.19 or later.
+- **Rate-limit names:** without `limiter`, the limiter name is now derived
+  from `limit`, `window` and `algorithm`, so route groups with different
+  settings no longer share one limiter (and its first request's settings).
+  Groups that share an explicit `limiter` name must use the same settings: a
+  mismatch raises `error({limiter_settings_conflict, Name, Existing, Requested})`.
+- **Refresh tokens under concurrency:** of several concurrent `refresh/2`
+  calls with one refresh token, one gets a new pair. The others get
+  `{error, reuse_detected}` and revoke the family, or `{error, invalid_refresh}`
+  if the family is already revoked. The winner's new refresh token is in that
+  family, so it is revoked too: clients that refresh in parallel (several
+  tabs, retry on timeout) keep only the new access token and must sign in
+  again. This is deliberate reuse detection (RFC 6819).
+- **Reset tokens under concurrency:** of several concurrent
+  `reset_password/3` calls with one token, one succeeds and the others get
+  `{error, not_found}`.
+- **Error changesets:** `register/2,3`, `change_password/4` and
+  `reset_password/3` remove `password` and `password_confirmation` (atom and
+  binary keys) from the changes and params of an error changeset.
+
+New in this release: `nova_auth_actor:sign_in/2` (renew, then store; the way
+to log a user in) and `nova_auth_rate_limit:client_ip/1` with the
+`trusted_proxies` env for apps behind a reverse proxy.
 
 ## License
 
-MIT
+Apache-2.0

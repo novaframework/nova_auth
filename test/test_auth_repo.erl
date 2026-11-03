@@ -18,7 +18,7 @@ start() ->
         pool => test_auth_repo,
         database => <<"nova_auth_test">>,
         hostname => <<"localhost">>,
-        port => 5555,
+        port => list_to_integer(os:getenv("PGPORT", "5555")),
         username => <<"postgres">>,
         password => <<"root">>,
         pool_size => 5

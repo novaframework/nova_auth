@@ -25,8 +25,14 @@ security margin for speed — 100,000+ is reasonable for game backends.
 hash(Password) ->
     hash(Password, pbkdf2_sha256).
 
--doc "Hash a password using the specified algorithm.".
--spec hash(binary(), pbkdf2_sha256 | bcrypt | argon2) -> binary().
+-doc """
+Hash a password using the specified algorithm.
+
+Only `pbkdf2_sha256` is implemented. Any other algorithm, including
+`bcrypt` and `argon2`, raises `error({unsupported_hash_algorithm, Algorithm})`
+rather than silently hashing with a different algorithm.
+""".
+-spec hash(binary(), atom()) -> binary().
 hash(Password, pbkdf2_sha256) ->
     Iterations = iterations(),
     Salt = crypto:strong_rand_bytes(16),
@@ -34,10 +40,8 @@ hash(Password, pbkdf2_sha256) ->
     IterBin = integer_to_binary(Iterations),
     <<"$pbkdf2-sha256$", IterBin/binary, "$", (base64:encode(Salt))/binary, "$",
         (base64:encode(DK))/binary>>;
-hash(Password, bcrypt) ->
-    hash(Password, pbkdf2_sha256);
-hash(Password, argon2) ->
-    hash(Password, pbkdf2_sha256).
+hash(_Password, Algorithm) ->
+    error({unsupported_hash_algorithm, Algorithm}).
 
 -doc "Verify a password against a stored hash using constant-time comparison.".
 -spec verify(binary(), binary()) -> boolean().
@@ -69,4 +73,7 @@ dummy_verify() ->
 
 -spec iterations() -> pos_integer().
 iterations() ->
-    application:get_env(nova_auth, pbkdf2_iterations, ?DEFAULT_ITERATIONS).
+    case application:get_env(nova_auth, pbkdf2_iterations, ?DEFAULT_ITERATIONS) of
+        Iterations when is_integer(Iterations), Iterations > 0 -> Iterations;
+        Other -> error({invalid_pbkdf2_iterations, Other})
+    end.

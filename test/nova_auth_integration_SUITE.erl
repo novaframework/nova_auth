@@ -13,6 +13,8 @@
     test_login_wrong_password/1,
     test_login_nonexistent_user/1,
     test_session_token_flow/1,
+    test_session_token_is_url_safe/1,
+    test_legacy_base64_session_token_still_valid/1,
     test_change_password/1,
     test_change_password_wrong_current/1,
     test_confirm_token_flow/1,
@@ -20,7 +22,25 @@
     test_refresh_rotation_flow/1,
     test_refresh_reuse_revokes_family/1,
     test_refresh_invalid/1,
-    test_revoke_all_tokens/1
+    test_revoke_all_tokens/1,
+    test_purge_expired_tokens/1,
+    test_undecodable_tokens_are_not_found/1,
+    test_register_with_configured_schema/1,
+    test_change_identity_app_changeset_can_unconfirm/1,
+    test_change_identity_same_identity_keeps_confirmed_at/1,
+    test_change_identity_fallback_keeps_confirmed_at/1,
+    test_require_confirmed/1,
+    test_require_confirmed_wrong_password/1,
+    test_refresh_concurrent_single_winner/1,
+    test_reset_concurrent_single_use/1,
+    test_reset_failed_update_keeps_token/1,
+    test_register_error_has_no_password/1,
+    test_change_password_error_has_no_password/1,
+    test_refresh_failed_mint_keeps_token/1,
+    test_reset_claim_error_is_not_not_found/1,
+    test_revoke_all_during_refresh/1,
+    test_revoke_family_during_refresh/1,
+    test_delete_all_user_tokens_during_refresh/1
 ]).
 
 all() ->
@@ -29,6 +49,8 @@ all() ->
         test_login_wrong_password,
         test_login_nonexistent_user,
         test_session_token_flow,
+        test_session_token_is_url_safe,
+        test_legacy_base64_session_token_still_valid,
         test_change_password,
         test_change_password_wrong_current,
         test_confirm_token_flow,
@@ -36,7 +58,25 @@ all() ->
         test_refresh_rotation_flow,
         test_refresh_reuse_revokes_family,
         test_refresh_invalid,
-        test_revoke_all_tokens
+        test_revoke_all_tokens,
+        test_purge_expired_tokens,
+        test_undecodable_tokens_are_not_found,
+        test_register_with_configured_schema,
+        test_change_identity_app_changeset_can_unconfirm,
+        test_change_identity_same_identity_keeps_confirmed_at,
+        test_change_identity_fallback_keeps_confirmed_at,
+        test_require_confirmed,
+        test_require_confirmed_wrong_password,
+        test_refresh_concurrent_single_winner,
+        test_reset_concurrent_single_use,
+        test_reset_failed_update_keeps_token,
+        test_register_error_has_no_password,
+        test_change_password_error_has_no_password,
+        test_refresh_failed_mint_keeps_token,
+        test_reset_claim_error_is_not_not_found,
+        test_revoke_all_during_refresh,
+        test_revoke_family_during_refresh,
+        test_delete_all_user_tokens_during_refresh
     ].
 
 init_per_suite(Config) ->
@@ -103,6 +143,34 @@ test_session_token_flow(_Config) ->
         {error, _},
         nova_auth_session:get_user_by_session_token(test_auth_config, Token)
     ).
+
+test_session_token_is_url_safe(_Config) ->
+    cleanup_users(),
+    {ok, User} = register_user(<<"urlsafe@example.com">>, <<"password123456">>),
+    {ok, Token} = nova_auth_session:generate_session_token(test_auth_config, User),
+    ?assertEqual(Token, uri_string:quote(Token)),
+    {ok, Found} = nova_auth_session:get_user_by_session_token(test_auth_config, Token),
+    ?assertEqual(maps:get(id, User), maps:get(id, Found)).
+
+test_legacy_base64_session_token_still_valid(_Config) ->
+    cleanup_users(),
+    {ok, User} = register_user(<<"legacy@example.com">>, <<"password123456">>),
+    Raw = legacy_raw_bytes(),
+    LegacyToken = base64:encode(Raw),
+    CS = kura_changeset:cast(
+        test_auth_token,
+        #{},
+        #{
+            user_id => maps:get(id, User),
+            token => base64:encode(crypto:hash(sha256, Raw)),
+            context => <<"session">>,
+            inserted_at => calendar:universal_time()
+        },
+        [user_id, token, context, inserted_at]
+    ),
+    {ok, _} = kura_repo_worker:insert(test_auth_repo, CS),
+    {ok, Found} = nova_auth_session:get_user_by_session_token(test_auth_config, LegacyToken),
+    ?assertEqual(maps:get(id, User), maps:get(id, Found)).
 
 test_change_password(_Config) ->
     cleanup_users(),
@@ -205,6 +273,427 @@ test_revoke_all_tokens(_Config) ->
 %% Helpers
 %%----------------------------------------------------------------------
 
+test_purge_expired_tokens(_Config) ->
+    cleanup_users(),
+    {ok, User} = register_user(<<"purge@example.com">>, <<"password123456">>),
+    UserId = maps:get(id, User),
+    Expired = [
+        {<<"session">>, 15 * 86400},
+        {<<"confirm">>, 4 * 86400},
+        {<<"reset">>, 2 * 3600},
+        {<<"access">>, 61 * 60},
+        {<<"refresh">>, 31 * 86400}
+    ],
+    Fresh = [
+        {<<"session">>, 13 * 86400},
+        {<<"confirm">>, 2 * 86400},
+        {<<"reset">>, 30 * 60},
+        {<<"access">>, 59 * 60},
+        {<<"refresh">>, 29 * 86400},
+        {<<"api">>, 365 * 86400}
+    ],
+    [insert_token_row(UserId, Context, Age) || {Context, Age} <- Expired ++ Fresh],
+    ?assertEqual({ok, length(Expired)}, nova_auth_session:purge_expired_tokens(test_auth_config)),
+    {ok, Rows} = kura_repo_worker:all(test_auth_repo, kura_query:from(test_auth_token)),
+    ?assertEqual(
+        lists:sort([Context || {Context, _} <- Fresh]),
+        lists:sort([maps:get(context, Row) || Row <- Rows])
+    ),
+    ?assertEqual({ok, 0}, nova_auth_session:purge_expired_tokens(test_auth_config)).
+
+test_undecodable_tokens_are_not_found(_Config) ->
+    Cfg = test_auth_config,
+    [
+        begin
+            ?assertEqual(
+                {error, not_found}, nova_auth_session:get_user_by_session_token(Cfg, Junk)
+            ),
+            ?assertEqual(ok, nova_auth_session:delete_session_token(Cfg, Junk)),
+            ?assertEqual({error, not_found}, nova_auth_confirm:confirm_user(Cfg, Junk)),
+            ?assertEqual({error, not_found}, nova_auth_reset:reset_password(Cfg, Junk, #{})),
+            ?assertEqual({error, not_found}, nova_auth_refresh:get_user_by_access_token(Cfg, Junk)),
+            ?assertEqual({error, invalid_refresh}, nova_auth_refresh:refresh(Cfg, Junk)),
+            ?assertEqual(ok, nova_auth_refresh:revoke_family(Cfg, Junk)),
+            ?assertEqual(ok, nova_auth_refresh:delete_access_token(Cfg, Junk))
+        end
+     || Junk <- [<<"Bearer junk!">>, <<"%%%">>, <<"a">>, <<>>]
+    ].
+
+test_register_with_configured_schema(_Config) ->
+    cleanup_users(),
+    {ok, User} = nova_auth_accounts:register(test_auth_config, #{
+        email => <<"register2@example.com">>,
+        password => <<"password123456">>,
+        password_confirmation => <<"password123456">>
+    }),
+    ?assertMatch(#{email := <<"register2@example.com">>}, User),
+    ?assertMatch(
+        {ok, _},
+        nova_auth_accounts:authenticate(
+            test_auth_config, <<"register2@example.com">>, <<"password123456">>
+        )
+    ).
+
+test_change_identity_app_changeset_can_unconfirm(_Config) ->
+    cleanup_users(),
+    User = confirmed_user(<<"old@example.com">>),
+    {ok, _} = nova_auth_accounts:change_identity(
+        test_auth_config, User, <<"password123456">>, #{email => <<"new@example.com">>}
+    ),
+    {ok, Reloaded} = nova_auth_accounts:get_user_by_id(test_auth_config, maps:get(id, User)),
+    ?assertMatch(#{email := <<"new@example.com">>}, Reloaded),
+    ?assert(unset(maps:get(confirmed_at, Reloaded))),
+    ?assertEqual(
+        {error, unconfirmed},
+        nova_auth_accounts:authenticate(
+            test_auth_config_confirmed, <<"new@example.com">>, <<"password123456">>
+        )
+    ).
+
+test_change_identity_same_identity_keeps_confirmed_at(_Config) ->
+    cleanup_users(),
+    User = confirmed_user(<<"same@example.com">>),
+    {ok, _} = nova_auth_accounts:change_identity(
+        test_auth_config, User, <<"password123456">>, #{email => <<"same@example.com">>}
+    ),
+    {ok, Reloaded} = nova_auth_accounts:get_user_by_id(test_auth_config, maps:get(id, User)),
+    ?assertNot(unset(maps:get(confirmed_at, Reloaded))).
+
+test_change_identity_fallback_keeps_confirmed_at(_Config) ->
+    cleanup_users(),
+    User = confirmed_user(<<"plain@example.com">>),
+    Params = #{
+        email => <<"plain-new@example.com">>,
+        hashed_password => <<"attacker-chosen">>,
+        confirmed_at => {{2020, 1, 1}, {0, 0, 0}}
+    },
+    {ok, _} = nova_auth_accounts:change_identity(
+        test_auth_config_plain, User, <<"password123456">>, Params
+    ),
+    {ok, Reloaded} = nova_auth_accounts:get_user_by_id(test_auth_config, maps:get(id, User)),
+    ?assertMatch(#{email := <<"plain-new@example.com">>}, Reloaded),
+    ?assertEqual(maps:get(hashed_password, User), maps:get(hashed_password, Reloaded)),
+    ?assertEqual(maps:get(confirmed_at, User), maps:get(confirmed_at, Reloaded)),
+    ?assertMatch(
+        {error, _},
+        nova_auth_accounts:change_identity(
+            test_auth_config_plain, Reloaded, <<"password123456">>, #{email => <<>>}
+        )
+    ).
+
+confirmed_user(Email) ->
+    {ok, User} = register_user(Email, <<"password123456">>),
+    {ok, Token} = nova_auth_confirm:generate_confirm_token(test_auth_config, User),
+    {ok, Confirmed} = nova_auth_confirm:confirm_user(test_auth_config, Token),
+    ?assertNot(unset(maps:get(confirmed_at, Confirmed))),
+    Confirmed.
+
+unset(Value) ->
+    Value =:= undefined orelse Value =:= nil orelse Value =:= null.
+
+test_require_confirmed(_Config) ->
+    cleanup_users(),
+    {ok, User} = register_user(<<"confirm-required@example.com">>, <<"password123456">>),
+    ?assertEqual(
+        {error, unconfirmed},
+        nova_auth_accounts:authenticate(
+            test_auth_config_confirmed, <<"confirm-required@example.com">>, <<"password123456">>
+        )
+    ),
+    ?assertMatch(
+        {ok, _},
+        nova_auth_accounts:authenticate(
+            test_auth_config, <<"confirm-required@example.com">>, <<"password123456">>
+        )
+    ),
+    {ok, Token} = nova_auth_confirm:generate_confirm_token(test_auth_config_confirmed, User),
+    {ok, _} = nova_auth_confirm:confirm_user(test_auth_config_confirmed, Token),
+    ?assertMatch(
+        {ok, #{email := <<"confirm-required@example.com">>}},
+        nova_auth_accounts:authenticate(
+            test_auth_config_confirmed, <<"confirm-required@example.com">>, <<"password123456">>
+        )
+    ).
+
+test_require_confirmed_wrong_password(_Config) ->
+    cleanup_users(),
+    {ok, _} = register_user(<<"confirm-wrong@example.com">>, <<"password123456">>),
+    ?assertEqual(
+        {error, invalid_credentials},
+        nova_auth_accounts:authenticate(
+            test_auth_config_confirmed, <<"confirm-wrong@example.com">>, <<"wrongpassword1">>
+        )
+    ),
+    ?assertEqual(
+        {error, invalid_credentials},
+        nova_auth_accounts:authenticate(
+            test_auth_config_confirmed, <<"nobody-confirmed@example.com">>, <<"password123456">>
+        )
+    ).
+
+test_refresh_concurrent_single_winner(_Config) ->
+    cleanup_users(),
+    {ok, User} = register_user(<<"race@example.com">>, <<"password123456">>),
+    Trials = [
+        begin
+            {ok, #{refresh_token := Refresh}} =
+                nova_auth_refresh:generate_pair(test_auth_config, User),
+            in_parallel(8, fun() -> nova_auth_refresh:refresh(test_auth_config, Refresh) end)
+        end
+     || _ <- lists:seq(1, 5)
+    ],
+    [
+        begin
+            {Winners, Losers} = lists:partition(fun(R) -> element(1, R) =:= ok end, Results),
+            ?assertEqual(1, length(Winners)),
+            ?assertEqual(
+                [],
+                [L || L <- Losers, L =/= {error, reuse_detected}, L =/= {error, invalid_refresh}]
+            ),
+            ?assert(lists:member({error, reuse_detected}, Losers))
+        end
+     || Results <- Trials
+    ].
+
+test_refresh_failed_mint_keeps_token(_Config) ->
+    cleanup_users(),
+    {ok, User} = register_user(<<"mint-fail@example.com">>, <<"password123456">>),
+    {ok, #{refresh_token := Refresh}} = nova_auth_refresh:generate_pair(test_auth_config, User),
+    with_trigger(<<"INSERT">>, fun() ->
+        ?assertMatch({error, _}, nova_auth_refresh:refresh(test_auth_config, Refresh))
+    end),
+    ?assertMatch({ok, _}, nova_auth_refresh:refresh(test_auth_config, Refresh)).
+
+test_reset_claim_error_is_not_not_found(_Config) ->
+    cleanup_users(),
+    {ok, User} = register_user(<<"reset-dberr@example.com">>, <<"password123456">>),
+    {ok, Token} = nova_auth_reset:generate_reset_token(test_auth_config, User),
+    Params = #{
+        password => <<"resetpass12345">>,
+        password_confirmation => <<"resetpass12345">>
+    },
+    with_trigger(<<"DELETE">>, fun() ->
+        Result = nova_auth_reset:reset_password(test_auth_config, Token, Params),
+        ?assertMatch({error, _}, Result),
+        ?assertNotEqual({error, not_found}, Result)
+    end),
+    ?assertMatch({ok, _}, nova_auth_reset:reset_password(test_auth_config, Token, Params)).
+
+test_revoke_all_during_refresh(_Config) ->
+    {ok, #{access_token := Access, refresh_token := Refresh}} =
+        refresh_during(<<"revoke-all-race@example.com">>, fun(User, _Refresh) ->
+            nova_auth_refresh:revoke_all(test_auth_config, maps:get(id, User))
+        end),
+    ?assertEqual({error, invalid_refresh}, nova_auth_refresh:refresh(test_auth_config, Refresh)),
+    ?assertEqual(
+        {error, not_found}, nova_auth_refresh:get_user_by_access_token(test_auth_config, Access)
+    ).
+
+test_revoke_family_during_refresh(_Config) ->
+    {ok, #{refresh_token := Refresh}} =
+        refresh_during(<<"revoke-family-race@example.com">>, fun(_User, Old) ->
+            nova_auth_refresh:revoke_family(test_auth_config, Old)
+        end),
+    ?assertEqual({error, invalid_refresh}, nova_auth_refresh:refresh(test_auth_config, Refresh)).
+
+test_delete_all_user_tokens_during_refresh(_Config) ->
+    {ok, #{access_token := Access, refresh_token := Refresh}} =
+        refresh_during(<<"password-race@example.com">>, fun(User, _Refresh) ->
+            nova_auth_session:delete_all_user_tokens(test_auth_config, maps:get(id, User))
+        end),
+    ?assertEqual({error, invalid_refresh}, nova_auth_refresh:refresh(test_auth_config, Refresh)),
+    ?assertEqual(
+        {error, not_found}, nova_auth_refresh:get_user_by_access_token(test_auth_config, Access)
+    ).
+
+refresh_during(Email, Revoke) ->
+    cleanup_users(),
+    {ok, User} = register_user(Email, <<"password123456">>),
+    {ok, #{refresh_token := Refresh}} = nova_auth_refresh:generate_pair(test_auth_config, User),
+    Self = self(),
+    Ref = make_ref(),
+    with_slow_inserts(fun() ->
+        _ = spawn_link(fun() ->
+            Self ! {Ref, nova_auth_refresh:refresh(test_auth_config, Refresh)}
+        end),
+        timer:sleep(150),
+        ok = Revoke(User, Refresh),
+        receive
+            {Ref, Result} -> Result
+        after 10000 -> error(timeout)
+        end
+    end).
+
+with_slow_inserts(Fun) ->
+    kura_repo_worker:pgo_query(
+        test_auth_repo,
+        <<
+            "CREATE OR REPLACE FUNCTION nova_auth_test_slow() RETURNS trigger AS $$ "
+            "BEGIN PERFORM pg_sleep(0.5); RETURN NEW; END $$ LANGUAGE plpgsql"
+        >>,
+        []
+    ),
+    kura_repo_worker:pgo_query(
+        test_auth_repo,
+        <<
+            "CREATE TRIGGER nova_auth_test_slow BEFORE INSERT ON user_tokens "
+            "FOR EACH ROW EXECUTE FUNCTION nova_auth_test_slow()"
+        >>,
+        []
+    ),
+    try
+        Fun()
+    after
+        kura_repo_worker:pgo_query(
+            test_auth_repo, <<"DROP TRIGGER IF EXISTS nova_auth_test_slow ON user_tokens">>, []
+        )
+    end.
+
+with_trigger(Event, Fun) ->
+    kura_repo_worker:pgo_query(
+        test_auth_repo,
+        <<
+            "CREATE OR REPLACE FUNCTION nova_auth_test_reject() RETURNS trigger AS $$ "
+            "BEGIN RAISE EXCEPTION 'rejected by test'; END $$ LANGUAGE plpgsql"
+        >>,
+        []
+    ),
+    kura_repo_worker:pgo_query(
+        test_auth_repo,
+        <<"CREATE TRIGGER nova_auth_test_reject BEFORE ", Event/binary,
+            " ON user_tokens FOR EACH ROW EXECUTE FUNCTION nova_auth_test_reject()">>,
+        []
+    ),
+    try
+        Fun()
+    after
+        kura_repo_worker:pgo_query(
+            test_auth_repo, <<"DROP TRIGGER IF EXISTS nova_auth_test_reject ON user_tokens">>, []
+        )
+    end.
+
+test_reset_concurrent_single_use(_Config) ->
+    cleanup_users(),
+    {ok, User} = register_user(<<"reset-race@example.com">>, <<"password123456">>),
+    Params = #{
+        password => <<"newpassword12345">>,
+        password_confirmation => <<"newpassword12345">>
+    },
+    [
+        begin
+            {ok, Token} = nova_auth_reset:generate_reset_token(test_auth_config, User),
+            Results = in_parallel(6, fun() ->
+                nova_auth_reset:reset_password(test_auth_config, Token, Params)
+            end),
+            ?assertEqual(1, length([ok || {ok, _} <- Results])),
+            ?assertEqual(
+                {error, not_found},
+                nova_auth_reset:reset_password(test_auth_config, Token, Params)
+            )
+        end
+     || _ <- lists:seq(1, 3)
+    ].
+
+test_reset_failed_update_keeps_token(_Config) ->
+    cleanup_users(),
+    {ok, User} = register_user(<<"reset-keep@example.com">>, <<"password123456">>),
+    {ok, Token} = nova_auth_reset:generate_reset_token(test_auth_config, User),
+    {error, CS} = nova_auth_reset:reset_password(test_auth_config, Token, #{
+        password => <<"short">>,
+        password_confirmation => <<"short">>
+    }),
+    ?assertEqual(nomatch, binary:match(term_to_binary(CS), <<"short">>)),
+    ?assertMatch(
+        {ok, _},
+        nova_auth_reset:reset_password(test_auth_config, Token, #{
+            password => <<"resetpass12345">>,
+            password_confirmation => <<"resetpass12345">>
+        })
+    ).
+
+test_register_error_has_no_password(_Config) ->
+    cleanup_users(),
+    {ok, _} = register_user(<<"dup@example.com">>, <<"password123456">>),
+    Secret = <<"SuperSecretPw123">>,
+    Params = #{
+        email => <<"dup@example.com">>,
+        password => Secret,
+        password_confirmation => Secret
+    },
+    BinParams = #{
+        <<"email">> => <<"dup@example.com">>,
+        <<"password">> => Secret,
+        <<"password_confirmation">> => Secret
+    },
+    Results = [
+        nova_auth_accounts:register(test_auth_config, Params),
+        nova_auth_accounts:register(
+            test_auth_config, fun test_auth_user:registration_changeset/2, Params
+        ),
+        nova_auth_accounts:register(
+            test_auth_config, fun test_auth_user:registration_changeset/2, BinParams
+        )
+    ],
+    [
+        begin
+            ?assertMatch({error, #kura_changeset{}}, Result),
+            ?assertEqual(nomatch, binary:match(term_to_binary(Result), Secret))
+        end
+     || Result <- Results
+    ].
+
+test_change_password_error_has_no_password(_Config) ->
+    cleanup_users(),
+    {ok, User} = register_user(<<"pw-err@example.com">>, <<"password123456">>),
+    Result = nova_auth_accounts:change_password(
+        test_auth_config, User, <<"password123456">>, #{
+            password => <<"MismatchSecret1">>,
+            password_confirmation => <<"MismatchSecret2">>
+        }
+    ),
+    ?assertMatch({error, #kura_changeset{}}, Result),
+    ?assertEqual(nomatch, binary:match(term_to_binary(Result), <<"MismatchSecret">>)).
+
+in_parallel(N, Fun) ->
+    Self = self(),
+    Refs = [
+        begin
+            Ref = make_ref(),
+            _ = spawn_link(fun() -> Self ! {Ref, Fun()} end),
+            Ref
+        end
+     || _ <- lists:seq(1, N)
+    ],
+    [
+        receive
+            {Ref, Result} -> Result
+        after 10000 -> error(timeout)
+        end
+     || Ref <- Refs
+    ].
+
+insert_token_row(UserId, Context, AgeSeconds) ->
+    Now = calendar:datetime_to_gregorian_seconds(calendar:universal_time()),
+    CS = kura_changeset:cast(
+        test_auth_token,
+        #{},
+        #{
+            user_id => UserId,
+            token => base64:encode(crypto:strong_rand_bytes(32)),
+            context => Context,
+            inserted_at => calendar:gregorian_seconds_to_datetime(Now - AgeSeconds)
+        },
+        [user_id, token, context, inserted_at]
+    ),
+    {ok, _} = kura_repo_worker:insert(test_auth_repo, CS).
+
+legacy_raw_bytes() ->
+    Raw = crypto:strong_rand_bytes(32),
+    case binary:match(base64:encode(Raw), [<<"+">>, <<"/">>]) of
+        nomatch -> legacy_raw_bytes();
+        _ -> Raw
+    end.
+
 register_user(Email, Password) ->
     nova_auth_accounts:register(
         test_auth_config, fun test_auth_user:registration_changeset/2, #{
@@ -271,6 +760,16 @@ setup_tables() ->
             "        ON user_tokens (context, token)\n"
             "    "
         >>,
+        []
+    ),
+    kura_repo_worker:pgo_query(
+        test_auth_repo,
+        <<"CREATE INDEX IF NOT EXISTS user_tokens_user_id_idx ON user_tokens (user_id)">>,
+        []
+    ),
+    kura_repo_worker:pgo_query(
+        test_auth_repo,
+        <<"CREATE INDEX IF NOT EXISTS user_tokens_family_id_idx ON user_tokens (family_id)">>,
         []
     ),
     ok.

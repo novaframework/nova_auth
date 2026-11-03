@@ -2,7 +2,7 @@
 -behaviour(kura_schema).
 -include_lib("kura/include/kura.hrl").
 
--export([table/0, fields/0, associations/0]).
+-export([table/0, fields/0, associations/0, indexes/0]).
 
 table() -> <<"user_tokens">>.
 
@@ -15,6 +15,13 @@ fields() ->
         #kura_field{name = family_id, type = string},
         #kura_field{name = used_at, type = utc_datetime},
         #kura_field{name = inserted_at, type = utc_datetime}
+    ].
+
+indexes() ->
+    [
+        {[context, token], #{unique => true}},
+        {[user_id], #{}},
+        {[family_id], #{}}
     ].
 
 associations() ->
