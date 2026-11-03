@@ -7,7 +7,9 @@ Short-lived access tokens paired with rotating refresh tokens.
 `refresh_token_validity_days`). The refresh token is single-use: `refresh/2`
 rotates it, marking the old one used and issuing a fresh access+refresh pair
 in the same `family_id`. Presenting an already-used refresh token is treated
-as theft — the whole family is revoked (`reuse_detected`).
+as theft: the whole family is revoked (`reuse_detected`). The token is claimed
+with a conditional update, so of several concurrent refreshes of one token
+exactly one gets a new pair and the others get `reuse_detected`.
 
 Requires the configured `token_schema` to have `family_id` (string) and
 `used_at` (utc_datetime) fields in addition to the session-token fields,
@@ -123,9 +125,7 @@ delete_access_token(_AuthMod, _Access) ->
 handle_row(Cfg, Row, Days) ->
     case is_used(maps:get(used_at, Row, undefined)) of
         true ->
-            %% Rotated token presented again — likely stolen. Burn the family.
-            _ = revoke_family_id(Cfg, maps:get(family_id, Row, undefined)),
-            {error, reuse_detected};
+            reuse_detected(Cfg, Row);
         false ->
             case within(maps:get(inserted_at, Row), Days * 86400) of
                 false ->
@@ -136,11 +136,27 @@ handle_row(Cfg, Row, Days) ->
             end
     end.
 
+%% The conditional update is the single-use check: of concurrent refreshes
+%% of one token only the one that flips used_at from NULL wins.
 -spec rotate(map(), map()) -> {ok, tokens()} | {error, term()}.
 rotate(#{repo := Repo, token_schema := Schema} = Cfg, Row) ->
-    MarkCS = kura_changeset:cast(Schema, Row, #{used_at => calendar:universal_time()}, [used_at]),
-    _ = kura_repo_worker:update(Repo, MarkCS),
-    mint_pair(Cfg, maps:get(user_id, Row), maps:get(family_id, Row, undefined)).
+    Claim = kura_query:where(
+        kura_query:where(kura_query:from(Schema), {id, maps:get(id, Row)}),
+        {used_at, is_nil}
+    ),
+    case kura_repo_worker:update_all(Repo, Claim, #{used_at => calendar:universal_time()}) of
+        {ok, 1} ->
+            mint_pair(Cfg, maps:get(user_id, Row), maps:get(family_id, Row, undefined));
+        {ok, 0} ->
+            reuse_detected(Cfg, Row);
+        {error, _} ->
+            {error, invalid_refresh}
+    end.
+
+-spec reuse_detected(map(), map()) -> {error, reuse_detected}.
+reuse_detected(Cfg, Row) ->
+    ok = revoke_family_id(Cfg, maps:get(family_id, Row, undefined)),
+    {error, reuse_detected}.
 
 -spec mint_pair(map(), term(), binary() | undefined) -> {ok, tokens()} | {error, term()}.
 mint_pair(Cfg, UserId, Family) ->

@@ -30,7 +30,8 @@
     test_change_identity_same_identity_keeps_confirmed_at/1,
     test_change_identity_fallback_casts_only_identity/1,
     test_require_confirmed/1,
-    test_require_confirmed_wrong_password/1
+    test_require_confirmed_wrong_password/1,
+    test_refresh_concurrent_single_winner/1
 ]).
 
 all() ->
@@ -56,7 +57,8 @@ all() ->
         test_change_identity_same_identity_keeps_confirmed_at,
         test_change_identity_fallback_casts_only_identity,
         test_require_confirmed,
-        test_require_confirmed_wrong_password
+        test_require_confirmed_wrong_password,
+        test_refresh_concurrent_single_winner
     ].
 
 init_per_suite(Config) ->
@@ -410,6 +412,43 @@ test_require_confirmed_wrong_password(_Config) ->
             test_auth_config_confirmed, <<"nobody-confirmed@example.com">>, <<"password123456">>
         )
     ).
+
+test_refresh_concurrent_single_winner(_Config) ->
+    cleanup_users(),
+    {ok, User} = register_user(<<"race@example.com">>, <<"password123456">>),
+    Trials = [
+        begin
+            {ok, #{refresh_token := Refresh}} =
+                nova_auth_refresh:generate_pair(test_auth_config, User),
+            in_parallel(8, fun() -> nova_auth_refresh:refresh(test_auth_config, Refresh) end)
+        end
+     || _ <- lists:seq(1, 5)
+    ],
+    [
+        begin
+            ?assertEqual(1, length([ok || {ok, _} <- Results])),
+            ?assertEqual(7, length([e || {error, reuse_detected} <- Results]))
+        end
+     || Results <- Trials
+    ].
+
+in_parallel(N, Fun) ->
+    Self = self(),
+    Refs = [
+        begin
+            Ref = make_ref(),
+            _ = spawn_link(fun() -> Self ! {Ref, Fun()} end),
+            Ref
+        end
+     || _ <- lists:seq(1, N)
+    ],
+    [
+        receive
+            {Ref, Result} -> Result
+        after 10000 -> error(timeout)
+        end
+     || Ref <- Refs
+    ].
 
 insert_token_row(UserId, Context, AgeSeconds) ->
     Now = calendar:datetime_to_gregorian_seconds(calendar:universal_time()),
