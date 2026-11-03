@@ -15,8 +15,17 @@ timing-based user enumeration.
     get_user_by_id/2
 ]).
 
--doc "Authenticate a user by identity and password.".
--spec authenticate(module(), binary(), binary()) -> {ok, map()} | {error, invalid_credentials}.
+-doc """
+Authenticate a user by identity and password.
+
+With `require_confirmed => true` in the auth config, a user whose
+`confirmed_at` is not set gets `{error, unconfirmed}` instead of
+`{ok, User}`. The password is verified first either way, so the check adds
+no timing difference, and `{error, unconfirmed}` is only returned for a
+correct password.
+""".
+-spec authenticate(module(), binary(), binary()) ->
+    {ok, map()} | {error, invalid_credentials | unconfirmed}.
 authenticate(AuthMod, Identity, Password) ->
     Cfg = nova_auth:config(AuthMod),
     #{repo := Repo, user_schema := UserSchema} = Cfg,
@@ -27,7 +36,7 @@ authenticate(AuthMod, Identity, Password) ->
         {ok, [User]} ->
             HashedPassword = maps:get(PasswordField, User),
             case nova_auth_password:verify(Password, HashedPassword) of
-                true -> {ok, User};
+                true -> check_confirmed(Cfg, User);
                 false -> {error, invalid_credentials}
             end;
         _ ->
@@ -106,6 +115,14 @@ get_user_by_id(AuthMod, UserId) ->
 %%----------------------------------------------------------------------
 %% Internal
 %%----------------------------------------------------------------------
+
+check_confirmed(#{require_confirmed := true}, User) ->
+    case maps:get(confirmed_at, User, undefined) of
+        Unset when Unset =:= undefined; Unset =:= nil; Unset =:= null -> {error, unconfirmed};
+        _ -> {ok, User}
+    end;
+check_confirmed(_Cfg, User) ->
+    {ok, User}.
 
 apply_password_changeset(UserSchema, User, Params) ->
     case erlang:function_exported(UserSchema, password_changeset, 2) of

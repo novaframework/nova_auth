@@ -23,7 +23,9 @@
     test_refresh_reuse_revokes_family/1,
     test_refresh_invalid/1,
     test_revoke_all_tokens/1,
-    test_purge_expired_tokens/1
+    test_purge_expired_tokens/1,
+    test_require_confirmed/1,
+    test_require_confirmed_wrong_password/1
 ]).
 
 all() ->
@@ -42,7 +44,9 @@ all() ->
         test_refresh_reuse_revokes_family,
         test_refresh_invalid,
         test_revoke_all_tokens,
-        test_purge_expired_tokens
+        test_purge_expired_tokens,
+        test_require_confirmed,
+        test_require_confirmed_wrong_password
     ].
 
 init_per_suite(Config) ->
@@ -266,6 +270,46 @@ test_purge_expired_tokens(_Config) ->
         lists:sort([maps:get(context, Row) || Row <- Rows])
     ),
     ?assertEqual({ok, 0}, nova_auth_token:purge_expired(test_auth_config)).
+
+test_require_confirmed(_Config) ->
+    cleanup_users(),
+    {ok, User} = register_user(<<"confirm-required@example.com">>, <<"password123456">>),
+    ?assertEqual(
+        {error, unconfirmed},
+        nova_auth_accounts:authenticate(
+            test_auth_config_confirmed, <<"confirm-required@example.com">>, <<"password123456">>
+        )
+    ),
+    ?assertMatch(
+        {ok, _},
+        nova_auth_accounts:authenticate(
+            test_auth_config, <<"confirm-required@example.com">>, <<"password123456">>
+        )
+    ),
+    {ok, Token} = nova_auth_confirm:generate_confirm_token(test_auth_config_confirmed, User),
+    {ok, _} = nova_auth_confirm:confirm_user(test_auth_config_confirmed, Token),
+    ?assertMatch(
+        {ok, #{email := <<"confirm-required@example.com">>}},
+        nova_auth_accounts:authenticate(
+            test_auth_config_confirmed, <<"confirm-required@example.com">>, <<"password123456">>
+        )
+    ).
+
+test_require_confirmed_wrong_password(_Config) ->
+    cleanup_users(),
+    {ok, _} = register_user(<<"confirm-wrong@example.com">>, <<"password123456">>),
+    ?assertEqual(
+        {error, invalid_credentials},
+        nova_auth_accounts:authenticate(
+            test_auth_config_confirmed, <<"confirm-wrong@example.com">>, <<"wrongpassword1">>
+        )
+    ),
+    ?assertEqual(
+        {error, invalid_credentials},
+        nova_auth_accounts:authenticate(
+            test_auth_config_confirmed, <<"nobody-confirmed@example.com">>, <<"password123456">>
+        )
+    ).
 
 insert_token_row(UserId, Context, AgeSeconds) ->
     Now = calendar:datetime_to_gregorian_seconds(calendar:universal_time()),

@@ -36,7 +36,10 @@ nova_auth_session, etc.). OIDC-only applications can omit them entirely.
         confirm_validity_days => pos_integer(),
         reset_validity_hours => pos_integer(),
         hash_algorithm => pbkdf2_sha256,
-        token_bytes => pos_integer()
+        token_bytes => pos_integer(),
+        access_token_validity_minutes => pos_integer(),
+        refresh_token_validity_days => pos_integer(),
+        require_confirmed => boolean()
     }.
 
 -doc """
@@ -59,7 +62,8 @@ config(Mod) ->
                 confirm_validity_days => 3,
                 reset_validity_hours => 1,
                 hash_algorithm => pbkdf2_sha256,
-                token_bytes => ?NOVA_AUTH_DEFAULT_TOKEN_BYTES
+                token_bytes => ?NOVA_AUTH_DEFAULT_TOKEN_BYTES,
+                require_confirmed => false
             },
             Merged = maps:merge(Defaults, Cfg),
             ok = check_hash_algorithm(maps:get(hash_algorithm, Merged)),
