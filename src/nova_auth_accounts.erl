@@ -106,9 +106,9 @@ change_password(AuthMod, User, CurrentPassword, NewParams) ->
 Change a user's identity (e.g. email) after verifying the current password. Invalidates all tokens.
 
 Uses the user schema's `email_changeset/2` when it exports one, otherwise
-casts only the configured `user_identity_field` and requires it. When the
-identity actually changes and the schema has a `confirmed_at` field,
-`confirmed_at` is cleared, so the new address has to be confirmed again.
+casts only the configured `user_identity_field` and requires it. Whether a
+new address must be confirmed again is up to that changeset; see the
+Configuration guide.
 
 Actors already stored in other sessions with `nova_auth_actor` are not
 removed; see the Actor Session guide for ending those sessions too.
@@ -123,8 +123,7 @@ change_identity(AuthMod, User, CurrentPassword, NewParams) ->
     HashedPassword = maps:get(PasswordField, User),
     case nova_auth_password:verify(CurrentPassword, HashedPassword) of
         true ->
-            CS0 = apply_identity_changeset(UserSchema, User, NewParams, IdentityField),
-            CS = maybe_unconfirm(UserSchema, User, IdentityField, CS0),
+            CS = apply_identity_changeset(UserSchema, User, NewParams, IdentityField),
             case kura_repo_worker:update(Repo, CS) of
                 {ok, UpdatedUser} ->
                     nova_auth_session:delete_all_user_tokens(AuthMod, maps:get(id, User)),
@@ -183,14 +182,3 @@ apply_identity_changeset(UserSchema, User, Params, IdentityField) ->
             CS = kura_changeset:cast(UserSchema, User, Params, [IdentityField]),
             kura_changeset:validate_required(CS, [IdentityField])
     end.
-
-maybe_unconfirm(UserSchema, User, IdentityField, CS) ->
-    New = kura_changeset:get_change(CS, IdentityField),
-    Changed = New =/= undefined andalso New =/= maps:get(IdentityField, User, undefined),
-    case Changed andalso has_field(UserSchema, confirmed_at) of
-        true -> kura_changeset:put_change(CS, confirmed_at, undefined);
-        false -> CS
-    end.
-
-has_field(UserSchema, Name) ->
-    lists:any(fun(#kura_field{name = N}) -> N =:= Name end, UserSchema:fields()).

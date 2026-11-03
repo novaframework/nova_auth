@@ -123,6 +123,19 @@ returned for the correct password; a wrong password is still
 `{error, invalid_credentials}`. The check reads the `confirmed_at` field
 that `nova_auth_confirm:confirm_user/2` sets.
 
+`nova_auth_accounts:change_identity/4` leaves `confirmed_at` to your
+schema's `email_changeset/2`. Apps usually require a new address to be
+confirmed again, by clearing it when the email changes:
+
+```erlang
+email_changeset(User, Params) ->
+    CS = kura_changeset:validate_required(kura_changeset:cast(?MODULE, User, Params, [email]), [email]),
+    case kura_changeset:get_change(CS, email) of
+        undefined -> CS;
+        _ -> kura_changeset:put_change(CS, confirmed_at, undefined)
+    end.
+```
+
 ## Purging Expired Tokens
 
 `nova_auth_session:purge_expired_tokens/1` deletes the tokens that are past their

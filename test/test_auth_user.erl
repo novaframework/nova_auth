@@ -47,8 +47,13 @@ password_changeset(Data, Params) ->
     maybe_hash_password(CS3).
 
 email_changeset(Data, Params) ->
-    CS = kura_changeset:cast(?MODULE, Data, Params, [email]),
-    kura_changeset:validate_required(CS, [email]).
+    CS = kura_changeset:validate_required(kura_changeset:cast(?MODULE, Data, Params, [email]), [
+        email
+    ]),
+    case kura_changeset:get_change(CS, email) of
+        undefined -> CS;
+        _ -> kura_changeset:put_change(CS, confirmed_at, undefined)
+    end.
 
 validate_password_confirmation(CS) ->
     case
