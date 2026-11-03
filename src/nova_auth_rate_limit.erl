@@ -182,7 +182,7 @@ ensure_limiter(Name, Settings) ->
         undefined ->
             case seki:new_limiter(Name, Settings) of
                 ok -> ok;
-                {error, already_exists} -> ok
+                {error, already_registered} -> ok
             end,
             persistent_term:put({?MODULE, Name}, Settings);
         Existing ->

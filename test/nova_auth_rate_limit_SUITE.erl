@@ -33,7 +33,9 @@
     client_ip_ipv4_mapped_peer/1,
     client_ip_malformed_header/1,
     client_ip_invalid_trusted_entry/1,
-    client_ip_as_key/1
+    client_ip_as_key/1,
+    concurrent_first_requests_do_not_crash/1,
+    preregistered_named_limiter_is_used/1
 ]).
 
 all() ->
@@ -54,7 +56,9 @@ groups() ->
             unnamed_groups_with_different_settings_are_independent,
             unnamed_groups_with_same_settings_share_counters,
             derived_limiter_name_is_readable,
-            retry_after_rounds_up
+            retry_after_rounds_up,
+            concurrent_first_requests_do_not_crash,
+            preregistered_named_limiter_is_used
         ]},
         {client_ip_tests, [], [
             client_ip_direct_peer,
@@ -297,6 +301,55 @@ client_ip_as_key(_Config) ->
         {stop, {reply, 429, _, _}, _, s},
         nova_auth_rate_limit:pre_request(Proxied(~"198.51.100.6"), #{}, Options, s)
     ).
+
+concurrent_first_requests_do_not_crash(_Config) ->
+    Options = #{limit => 150, window => 61234},
+    Self = self(),
+    Go = make_ref(),
+    Pids = [
+        spawn_link(fun() ->
+            receive
+                Go -> ok
+            end,
+            Result =
+                try nova_auth_rate_limit:pre_request(req({10, 9, 0, 1}), #{}, Options, s) of
+                    {ok, #{resp_headers := #{~"x-ratelimit-remaining" := Remaining}}, s} when
+                        is_binary(Remaining)
+                    ->
+                        {allow, binary_to_integer(Remaining)};
+                    {stop, {reply, 429, _, _}, _, s} ->
+                        deny
+                catch
+                    Class:Reason -> {Class, Reason}
+                end,
+            Self ! {self(), Result}
+        end)
+     || _ <- lists:seq(1, 200)
+    ],
+    _ = [Pid ! Go || Pid <- Pids],
+    Results = [
+        receive
+            {Pid, Result} -> Result
+        after 10000 -> error(timeout)
+        end
+     || Pid <- Pids
+    ],
+    ?assertEqual(
+        [],
+        [R || R <- Results, R =/= deny, not (is_tuple(R) andalso element(1, R) =:= allow)]
+    ),
+    ?assertEqual([], [N || {allow, N} <- Results, N < 0 orelse N >= 150]),
+    ?assertNotEqual([], [N || {allow, N} <- Results]).
+
+preregistered_named_limiter_is_used(_Config) ->
+    ok = seki:new_limiter(nova_auth_test_prereg, #{
+        algorithm => sliding_window, limit => 2, window => 60000
+    }),
+    Options = #{limiter => nova_auth_test_prereg, limit => 2, window => 60000},
+    Check = fun() -> nova_auth_rate_limit:pre_request(req({10, 9, 0, 2}), #{}, Options, s) end,
+    ?assertMatch({ok, _, s}, Check()),
+    ?assertMatch({ok, _, s}, Check()),
+    ?assertMatch({stop, {reply, 429, _, _}, _, s}, Check()).
 
 trust(Proxies) ->
     ok = application:set_env(nova_auth, trusted_proxies, Proxies).
