@@ -13,7 +13,11 @@
     seki_limiter_created/1,
     empty_options_use_defaults/1,
     partial_options_merge_defaults/1,
-    deny_returns_three_tuple_stop/1
+    deny_returns_reply_stop/1,
+    key_module_function/1,
+    key_fun_is_rejected/1,
+    invalid_key_is_rejected/1,
+    mismatched_settings_warn_once/1
 ]).
 
 all() ->
@@ -26,7 +30,11 @@ groups() ->
             seki_limiter_created,
             empty_options_use_defaults,
             partial_options_merge_defaults,
-            deny_returns_three_tuple_stop
+            deny_returns_reply_stop,
+            key_module_function,
+            key_fun_is_rejected,
+            invalid_key_is_rejected,
+            mismatched_settings_warn_once
         ]}
     ].
 
@@ -68,18 +76,63 @@ partial_options_merge_defaults(_Config) ->
     {ok, Req1, _} = nova_auth_rate_limit:pre_request(Req, #{}, Options, plugin_state),
     ?assertEqual(~"1", cowboy_req:resp_header(~"x-ratelimit-remaining", Req1)).
 
-deny_returns_three_tuple_stop(_Config) ->
-    Options = #{limiter => rl_deny, limit => 1, key_fun => fun(_) -> same_key end},
+deny_returns_reply_stop(_Config) ->
+    Options = #{limiter => rl_deny, limit => 1},
     Req = req({10, 0, 0, 3}),
     {ok, _, plugin_state} = nova_auth_rate_limit:pre_request(Req, #{}, Options, plugin_state),
-    Result = nova_auth_rate_limit:pre_request(Req, #{}, Options, plugin_state),
-    ?assertMatch({stop, #{}, plugin_state}, Result),
-    receive
-        {{_, 1}, {response, 429, Headers, Body}} ->
-            ?assertMatch(#{~"retry-after" := _, ~"x-ratelimit-remaining" := ~"0"}, Headers),
-            ?assertEqual(#{~"error" => ~"too many requests"}, json:decode(iolist_to_binary(Body)))
-    after 1000 ->
-        ct:fail(no_reply_sent)
+    {stop, {reply, 429, Headers, Body}, Req, plugin_state} =
+        nova_auth_rate_limit:pre_request(Req, #{}, Options, plugin_state),
+    ?assertMatch(
+        #{
+            ~"content-type" := ~"application/json",
+            ~"retry-after" := _,
+            ~"x-ratelimit-remaining" := ~"0"
+        },
+        Headers
+    ),
+    ?assertEqual(#{~"error" => ~"too many requests"}, json:decode(Body)).
+
+key_module_function(_Config) ->
+    Options = #{limiter => rl_key_mf, limit => 1, key => {test_rate_limit_key, same_key}},
+    {ok, _, _} = nova_auth_rate_limit:pre_request(req({10, 0, 0, 4}), #{}, Options, s),
+    ?assertMatch(
+        {stop, {reply, 429, _, _}, _, s},
+        nova_auth_rate_limit:pre_request(req({10, 0, 0, 5}), #{}, Options, s)
+    ).
+
+key_fun_is_rejected(_Config) ->
+    Options = #{limiter => rl_key_fun, key_fun => fun test_rate_limit_key:same_key/1},
+    ?assertError(
+        {removed_option, key_fun},
+        nova_auth_rate_limit:pre_request(req({10, 0, 0, 6}), #{}, Options, s)
+    ).
+
+invalid_key_is_rejected(_Config) ->
+    Options = #{limiter => rl_bad_key, key => not_a_key_spec},
+    ?assertError(
+        {invalid_option, key, not_a_key_spec},
+        nova_auth_rate_limit:pre_request(req({10, 0, 0, 7}), #{}, Options, s)
+    ).
+
+mismatched_settings_warn_once(_Config) ->
+    First = #{limiter => rl_shared, limit => 5},
+    Other = #{limiter => rl_shared, limit => 50},
+    {ok, _, _} = nova_auth_rate_limit:pre_request(req({10, 0, 0, 8}), #{}, First, s),
+    ok = test_log_capture:start(),
+    try
+        {ok, _, _} = nova_auth_rate_limit:pre_request(req({10, 0, 0, 8}), #{}, Other, s),
+        {ok, _, _} = nova_auth_rate_limit:pre_request(req({10, 0, 0, 8}), #{}, Other, s),
+        {ok, _, _} = nova_auth_rate_limit:pre_request(req({10, 0, 0, 8}), #{}, First, s),
+        Warnings = [
+            Report
+         || #{level := warning, msg := {report, #{limiter := rl_shared} = Report}} <-
+                test_log_capture:events()
+        ],
+        ?assertMatch(
+            [#{settings := #{limit := 5}, ignored := #{limit := 50}}], Warnings
+        )
+    after
+        test_log_capture:stop()
     end.
 
 req(IP) ->

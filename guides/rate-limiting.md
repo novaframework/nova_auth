@@ -29,14 +29,16 @@ Pass options in the plugin config map:
     limit => 5,                       % Max requests per window (default: 10)
     window => 900000,                 % Window in ms, 15 minutes (default: 60000)
     algorithm => token_bucket,        % Seki algorithm (default: sliding_window)
-    key_fun => fun my_key/1           % Custom key function (default: peer IP)
+    key => {my_rate_limit, key}       % Module:Function(Req) -> Key (default: peer IP)
 }}
 ```
 
 A limiter is created by the first request that uses its name, with that
 request's `limit`, `window` and `algorithm`. Route groups that use the same
-`limiter` name (including the default) share its counters and its settings,
-so give each distinct policy its own name.
+`limiter` name (including the default) share its counters and keep the
+settings it was created with; a request with different settings is still
+counted against the original ones, and the plugin logs a warning (once per
+distinct setting). Give each distinct policy its own name.
 
 ## Algorithms
 
@@ -61,15 +63,23 @@ instead:
 
 ```erlang
 %% Rate limit by signed-in user, falling back to the client IP
-{pre_request, nova_auth_rate_limit, #{
-    key_fun => fun(Req) ->
-        case nova_auth_actor:fetch(Req) of
-            {ok, #{id := UserId}} -> {user, UserId};
-            {error, not_found} -> {ip, element(1, cowboy_req:peer(Req))}
-        end
-    end
-}}
+{pre_request, nova_auth_rate_limit, #{key => {my_rate_limit, key}}}
 ```
+
+```erlang
+-module(my_rate_limit).
+-export([key/1]).
+
+key(Req) ->
+    case nova_auth_actor:fetch(Req) of
+        {ok, #{id := UserId}} -> {user, UserId};
+        {error, not_found} -> {ip, element(1, cowboy_req:peer(Req))}
+    end.
+```
+
+`key` takes a `{Module, Function}` pair rather than a fun, so route
+configuration stays plain data. The `key_fun` option of earlier releases is
+rejected with `error({removed_option, key_fun})`.
 
 ## Response Headers
 
@@ -80,8 +90,8 @@ On denied requests (429 Too Many Requests, JSON body `{"error": "too many reques
 - `retry-after`: seconds until the client can retry
 - `x-ratelimit-remaining`: `0`
 
-A denied request stops the plugin chain (`{stop, Req, State}`), so the
-controller does not run.
+A denied request returns `{stop, {reply, 429, Headers, Body}, Req, State}`:
+Nova sends the reply and the controller does not run.
 
 ## Multiple Limiters
 
