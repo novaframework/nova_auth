@@ -9,6 +9,7 @@ timing-based user enumeration.
 
 -export([
     authenticate/3,
+    register/2,
     register/3,
     change_password/4,
     change_identity/4,
@@ -43,6 +44,15 @@ authenticate(AuthMod, Identity, Password) ->
             nova_auth_password:dummy_verify(),
             {error, invalid_credentials}
     end.
+
+-doc """
+Register a new user with the configured user schema's
+`registration_changeset/2`.
+""".
+-spec register(module(), map()) -> {ok, map()} | {error, #kura_changeset{}}.
+register(AuthMod, Params) ->
+    #{repo := Repo, user_schema := UserSchema} = nova_auth:config(AuthMod),
+    kura_repo_worker:insert(Repo, UserSchema:registration_changeset(#{}, Params)).
 
 -doc "Register a new user using the provided changeset function and params.".
 -spec register(module(), fun((map(), map()) -> #kura_changeset{}), map()) ->
@@ -82,6 +92,11 @@ change_password(AuthMod, User, CurrentPassword, NewParams) ->
 -doc """
 Change a user's identity (e.g. email) after verifying the current password. Invalidates all tokens.
 
+Uses the user schema's `email_changeset/2` when it exports one, otherwise
+casts only the configured `user_identity_field` and requires it. When the
+identity actually changes and the schema has a `confirmed_at` field,
+`confirmed_at` is cleared, so the new address has to be confirmed again.
+
 Actors already stored in other sessions with `nova_auth_actor` are not
 removed; see the Actor Session guide for ending those sessions too.
 """.
@@ -91,10 +106,12 @@ change_identity(AuthMod, User, CurrentPassword, NewParams) ->
     Cfg = nova_auth:config(AuthMod),
     #{repo := Repo, user_schema := UserSchema} = Cfg,
     PasswordField = maps:get(user_password_field, Cfg),
+    IdentityField = maps:get(user_identity_field, Cfg),
     HashedPassword = maps:get(PasswordField, User),
     case nova_auth_password:verify(CurrentPassword, HashedPassword) of
         true ->
-            CS = apply_identity_changeset(UserSchema, User, NewParams),
+            CS0 = apply_identity_changeset(UserSchema, User, NewParams, IdentityField),
+            CS = maybe_unconfirm(UserSchema, User, IdentityField, CS0),
             case kura_repo_worker:update(Repo, CS) of
                 {ok, UpdatedUser} ->
                     nova_auth_session:delete_all_user_tokens(AuthMod, maps:get(id, User)),
@@ -130,8 +147,22 @@ apply_password_changeset(UserSchema, User, Params) ->
         false -> kura_changeset:cast(UserSchema, User, Params, [password, password_confirmation])
     end.
 
-apply_identity_changeset(UserSchema, User, Params) ->
+apply_identity_changeset(UserSchema, User, Params, IdentityField) ->
     case erlang:function_exported(UserSchema, email_changeset, 2) of
-        true -> UserSchema:email_changeset(User, Params);
-        false -> kura_changeset:cast(UserSchema, User, Params, [email])
+        true ->
+            UserSchema:email_changeset(User, Params);
+        false ->
+            CS = kura_changeset:cast(UserSchema, User, Params, [IdentityField]),
+            kura_changeset:validate_required(CS, [IdentityField])
     end.
+
+maybe_unconfirm(UserSchema, User, IdentityField, CS) ->
+    New = kura_changeset:get_change(CS, IdentityField),
+    Changed = New =/= undefined andalso New =/= maps:get(IdentityField, User, undefined),
+    case Changed andalso has_field(UserSchema, confirmed_at) of
+        true -> kura_changeset:put_change(CS, confirmed_at, undefined);
+        false -> CS
+    end.
+
+has_field(UserSchema, Name) ->
+    lists:any(fun(#kura_field{name = N}) -> N =:= Name end, UserSchema:fields()).

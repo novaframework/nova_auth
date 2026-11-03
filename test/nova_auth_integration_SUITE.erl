@@ -25,6 +25,10 @@
     test_revoke_all_tokens/1,
     test_purge_expired_tokens/1,
     test_undecodable_tokens_are_not_found/1,
+    test_register_with_configured_schema/1,
+    test_change_identity_clears_confirmed_at/1,
+    test_change_identity_same_identity_keeps_confirmed_at/1,
+    test_change_identity_fallback_casts_only_identity/1,
     test_require_confirmed/1,
     test_require_confirmed_wrong_password/1
 ]).
@@ -47,6 +51,10 @@ all() ->
         test_revoke_all_tokens,
         test_purge_expired_tokens,
         test_undecodable_tokens_are_not_found,
+        test_register_with_configured_schema,
+        test_change_identity_clears_confirmed_at,
+        test_change_identity_same_identity_keeps_confirmed_at,
+        test_change_identity_fallback_casts_only_identity,
         test_require_confirmed,
         test_require_confirmed_wrong_password
     ].
@@ -290,6 +298,78 @@ test_undecodable_tokens_are_not_found(_Config) ->
         end
      || Junk <- [<<"Bearer junk!">>, <<"%%%">>, <<"a">>, <<>>]
     ].
+
+test_register_with_configured_schema(_Config) ->
+    cleanup_users(),
+    {ok, User} = nova_auth_accounts:register(test_auth_config, #{
+        email => <<"register2@example.com">>,
+        password => <<"password123456">>,
+        password_confirmation => <<"password123456">>
+    }),
+    ?assertMatch(#{email := <<"register2@example.com">>}, User),
+    ?assertMatch(
+        {ok, _},
+        nova_auth_accounts:authenticate(
+            test_auth_config, <<"register2@example.com">>, <<"password123456">>
+        )
+    ).
+
+test_change_identity_clears_confirmed_at(_Config) ->
+    cleanup_users(),
+    User = confirmed_user(<<"old@example.com">>),
+    {ok, _} = nova_auth_accounts:change_identity(
+        test_auth_config, User, <<"password123456">>, #{email => <<"new@example.com">>}
+    ),
+    {ok, Reloaded} = nova_auth_accounts:get_user_by_id(test_auth_config, maps:get(id, User)),
+    ?assertMatch(#{email := <<"new@example.com">>}, Reloaded),
+    ?assert(unset(maps:get(confirmed_at, Reloaded))),
+    ?assertEqual(
+        {error, unconfirmed},
+        nova_auth_accounts:authenticate(
+            test_auth_config_confirmed, <<"new@example.com">>, <<"password123456">>
+        )
+    ).
+
+test_change_identity_same_identity_keeps_confirmed_at(_Config) ->
+    cleanup_users(),
+    User = confirmed_user(<<"same@example.com">>),
+    {ok, _} = nova_auth_accounts:change_identity(
+        test_auth_config, User, <<"password123456">>, #{email => <<"same@example.com">>}
+    ),
+    {ok, Reloaded} = nova_auth_accounts:get_user_by_id(test_auth_config, maps:get(id, User)),
+    ?assertNot(unset(maps:get(confirmed_at, Reloaded))).
+
+test_change_identity_fallback_casts_only_identity(_Config) ->
+    cleanup_users(),
+    User = confirmed_user(<<"plain@example.com">>),
+    Params = #{
+        email => <<"plain-new@example.com">>,
+        hashed_password => <<"attacker-chosen">>,
+        confirmed_at => {{2020, 1, 1}, {0, 0, 0}}
+    },
+    {ok, _} = nova_auth_accounts:change_identity(
+        test_auth_config_plain, User, <<"password123456">>, Params
+    ),
+    {ok, Reloaded} = nova_auth_accounts:get_user_by_id(test_auth_config, maps:get(id, User)),
+    ?assertMatch(#{email := <<"plain-new@example.com">>}, Reloaded),
+    ?assertEqual(maps:get(hashed_password, User), maps:get(hashed_password, Reloaded)),
+    ?assert(unset(maps:get(confirmed_at, Reloaded))),
+    ?assertMatch(
+        {error, _},
+        nova_auth_accounts:change_identity(
+            test_auth_config_plain, Reloaded, <<"password123456">>, #{email => <<>>}
+        )
+    ).
+
+confirmed_user(Email) ->
+    {ok, User} = register_user(Email, <<"password123456">>),
+    {ok, Token} = nova_auth_confirm:generate_confirm_token(test_auth_config, User),
+    {ok, Confirmed} = nova_auth_confirm:confirm_user(test_auth_config, Token),
+    ?assertNot(unset(maps:get(confirmed_at, Confirmed))),
+    Confirmed.
+
+unset(Value) ->
+    Value =:= undefined orelse Value =:= nil orelse Value =:= null.
 
 test_require_confirmed(_Config) ->
     cleanup_users(),
