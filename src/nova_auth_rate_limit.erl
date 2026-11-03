@@ -22,11 +22,20 @@ automatically on first use if it doesn't exist.
 
 ## Options
 
-- `limiter` — Limiter name atom (default: `nova_auth_rate_limit`)
-- `limit` — Max requests per window (default: 10)
-- `window` — Window in milliseconds (default: 60000)
-- `algorithm` — Seki algorithm (default: `sliding_window`)
-- `key_fun` — `fun(Req) -> Key` for custom rate limit keys (default: peer IP)
+Every option is optional; `#{}` gives the defaults.
+
+- `limiter`: limiter name atom (default: `nova_auth_rate_limit`)
+- `limit`: max requests per window (default: 10)
+- `window`: window in milliseconds (default: 60000)
+- `algorithm`: Seki algorithm (default: `sliding_window`)
+- `key_fun`: `fun(Req) -> Key` for custom rate limit keys (default: peer IP)
+
+The limiter is created with the `limit`, `window` and `algorithm` of the
+first request that uses its name, and route groups that share a name share
+its counters. Give each distinct policy its own `limiter` name.
+
+A denied request gets a 429 JSON reply and the plugin returns
+`{stop, Req, State}`, so no later plugin or controller runs.
 """.
 -behaviour(nova_plugin).
 
@@ -39,13 +48,7 @@ automatically on first use if it doesn't exist.
 -doc false.
 -spec init() -> {ok, map()}.
 init() ->
-    {ok, #{
-        limiter => ?DEFAULT_LIMITER,
-        limit => ?DEFAULT_LIMIT,
-        window => ?DEFAULT_WINDOW,
-        algorithm => sliding_window,
-        key_fun => fun default_key/1
-    }}.
+    {ok, defaults()}.
 
 -doc false.
 -spec stop(map()) -> ok.
@@ -54,15 +57,15 @@ stop(_State) ->
 
 -doc false.
 -spec pre_request(cowboy_req:req(), term(), map(), term()) ->
-    {ok, cowboy_req:req(), map()} | {stop, cowboy_req:req()}.
-pre_request(Req, _State, PluginState, _) ->
+    {ok, cowboy_req:req(), term()} | {stop, cowboy_req:req(), term()}.
+pre_request(Req, _Env, Options, PluginState) ->
     #{
         limiter := LimiterName,
         limit := Limit,
         window := Window,
         algorithm := Algorithm,
         key_fun := KeyFun
-    } = PluginState,
+    } = maps:merge(defaults(), Options),
     ensure_limiter(LimiterName, Limit, Window, Algorithm),
     Key = KeyFun(Req),
     case seki:check(LimiterName, Key) of
@@ -84,12 +87,12 @@ pre_request(Req, _State, PluginState, _) ->
             ),
             Req2 = cowboy_req:set_resp_body(Body, Req1),
             Req3 = cowboy_req:reply(429, Req2),
-            {stop, Req3}
+            {stop, Req3, PluginState}
     end.
 
 -doc false.
--spec post_request(cowboy_req:req(), term(), map(), term()) -> {ok, cowboy_req:req(), map()}.
-post_request(Req, _State, PluginState, _) ->
+-spec post_request(cowboy_req:req(), term(), map(), term()) -> {ok, cowboy_req:req(), term()}.
+post_request(Req, _Env, _Options, PluginState) ->
     {ok, Req, PluginState}.
 
 -doc false.
@@ -106,6 +109,15 @@ plugin_info() ->
 %%----------------------------------------------------------------------
 %% Internal
 %%----------------------------------------------------------------------
+
+defaults() ->
+    #{
+        limiter => ?DEFAULT_LIMITER,
+        limit => ?DEFAULT_LIMIT,
+        window => ?DEFAULT_WINDOW,
+        algorithm => sliding_window,
+        key_fun => fun default_key/1
+    }.
 
 ensure_limiter(Name, Limit, Window, Algorithm) ->
     case persistent_term:get({?MODULE, Name}, false) of

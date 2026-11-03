@@ -10,7 +10,10 @@
 ]).
 -export([
     init_returns_defaults/1,
-    seki_limiter_created/1
+    seki_limiter_created/1,
+    empty_options_use_defaults/1,
+    partial_options_merge_defaults/1,
+    deny_returns_three_tuple_stop/1
 ]).
 
 all() ->
@@ -20,7 +23,10 @@ groups() ->
     [
         {rate_limit_tests, [], [
             init_returns_defaults,
-            seki_limiter_created
+            seki_limiter_created,
+            empty_options_use_defaults,
+            partial_options_merge_defaults,
+            deny_returns_three_tuple_stop
         ]}
     ].
 
@@ -50,3 +56,39 @@ seki_limiter_created(_Config) ->
     {allow, #{remaining := 0}} = seki:check(LimiterName, {127, 0, 0, 1}),
     {deny, #{retry_after := _}} = seki:check(LimiterName, {127, 0, 0, 1}),
     seki:delete_limiter(LimiterName).
+
+empty_options_use_defaults(_Config) ->
+    Req = req({10, 0, 0, 1}),
+    {ok, Req1, plugin_state} = nova_auth_rate_limit:pre_request(Req, #{}, #{}, plugin_state),
+    ?assertEqual(~"9", cowboy_req:resp_header(~"x-ratelimit-remaining", Req1)).
+
+partial_options_merge_defaults(_Config) ->
+    Options = #{limiter => rl_partial_options, limit => 2},
+    Req = req({10, 0, 0, 2}),
+    {ok, Req1, _} = nova_auth_rate_limit:pre_request(Req, #{}, Options, plugin_state),
+    ?assertEqual(~"1", cowboy_req:resp_header(~"x-ratelimit-remaining", Req1)).
+
+deny_returns_three_tuple_stop(_Config) ->
+    Options = #{limiter => rl_deny, limit => 1, key_fun => fun(_) -> same_key end},
+    Req = req({10, 0, 0, 3}),
+    {ok, _, plugin_state} = nova_auth_rate_limit:pre_request(Req, #{}, Options, plugin_state),
+    Result = nova_auth_rate_limit:pre_request(Req, #{}, Options, plugin_state),
+    ?assertMatch({stop, #{}, plugin_state}, Result),
+    receive
+        {{_, 1}, {response, 429, Headers, Body}} ->
+            ?assertMatch(#{~"retry-after" := _, ~"x-ratelimit-remaining" := ~"0"}, Headers),
+            ?assertEqual(#{~"error" => ~"too many requests"}, json:decode(iolist_to_binary(Body)))
+    after 1000 ->
+        ct:fail(no_reply_sent)
+    end.
+
+req(IP) ->
+    #{
+        pid => self(),
+        streamid => 1,
+        peer => {IP, 40000},
+        method => ~"POST",
+        version => 'HTTP/1.1',
+        headers => #{},
+        has_body => false
+    }.
