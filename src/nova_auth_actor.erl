@@ -49,7 +49,7 @@ the response carries a new session id. Use the returned request for the
 `store/2` call that follows, and return it from the controller (for example
 `{redirect, Path, Req1}`) so the new cookie reaches the client.
 
-Uses `nova_session:renew/1` when the running Nova provides it. Older Nova
+Uses `nova_session:renew(Req)` when the running Nova provides it. Older Nova
 releases have no renew function; there the session data is deleted with
 `nova_session:delete/1` and a new `session_id` cookie is set with a
 `crypto:strong_rand_bytes/1` id. That cookie gets `Path=/`, `HttpOnly`,

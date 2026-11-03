@@ -60,7 +60,7 @@ change) so a session id planted or observed before that point stops working
 (session fixation). Store the actor with the returned request, and return it
 from the controller so the new cookie is sent.
 
-On Nova releases that provide `nova_session:renew/1`, `renew/1` calls it. On
+On Nova releases that provide `nova_session:renew(Req)`, `renew/1` calls it. On
 older releases it deletes the session with `nova_session:delete/1` and sets a
 new `session_id` cookie itself: a 256-bit `crypto:strong_rand_bytes/1` id,
 `Path=/`, `HttpOnly`, `SameSite=Lax`, and `Secure` on HTTPS requests. The
