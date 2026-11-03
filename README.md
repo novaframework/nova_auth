@@ -81,7 +81,6 @@ Register and authenticate:
 {ok, User} = nova_auth_accounts:authenticate(my_auth, ~"user@example.com", ~"password123456").
 {ok, Req1} = nova_auth_actor:renew(Req).
 ok = nova_auth_actor:store(Req1, #{id => maps:get(id, User), provider => password, email => maps:get(email, User)}).
-%% Return Req1 from the controller, e.g. {redirect, ~"/", Req1}, so the new cookie is sent.
 
 %% Session token (database-backed)
 {ok, Token} = nova_auth_session:generate_session_token(my_auth, User).
@@ -147,7 +146,32 @@ Password auth options (all optional with defaults):
 ## Requirements
 
 - Erlang/OTP 28+
+- Nova 0.19+ (`nova_auth_actor:renew/1` delegates to `nova_session:renew/1`)
 - PostgreSQL via Kura and `kura_postgres` (only for password auth)
+
+## Upgrading from 0.2
+
+These changes can break an existing app:
+
+- **`hash_algorithm`:** `bcrypt` or `argon2` (or any value other than
+  `pbkdf2_sha256`) now raises `{unsupported_hash_algorithm, Value}` from
+  `nova_auth:config/1`. Set `hash_algorithm => pbkdf2_sha256` or remove it;
+  stored hashes are already PBKDF2 because bcrypt/argon2 silently fell back to it.
+- **`pbkdf2_iterations`:** a value that is not a positive integer now raises
+  `{invalid_pbkdf2_iterations, Value}`.
+- **`nova_auth_password:hash/2`:** the spec is `hash(binary(), atom())` and
+  only `pbkdf2_sha256` is accepted; other algorithms raise.
+- **Rate-limit options now take effect:** a route that passed only some
+  options used to crash the plugin (badmatch) on every request; missing
+  options now fall back to the defaults and the given ones apply, so those
+  routes start limiting (and replying 429) instead of failing.
+- **`key_fun` is replaced by `key`:** `nova_auth_rate_limit` takes
+  `key => {Module, Function}` and rejects `key_fun` with
+  `error({removed_option, key_fun})`.
+- **Token length:** new tokens are URL-safe base64 without padding, 43
+  characters for the default 32 bytes instead of 44. Tokens issued by 0.2
+  still verify. Widen any column or validation that expects 44 characters.
+- **Nova floor:** nova_auth now needs Nova 0.19 or later.
 
 ## License
 

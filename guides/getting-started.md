@@ -59,8 +59,8 @@ profile(#{auth_data := Actor} = _Req) ->
 
 If you have your own authentication logic, store the actor directly. Renew
 the session first, so a session id that was planted or observed before
-sign-in stops working (session fixation), and return the renewed request so
-the new cookie reaches the client:
+sign-in stops working (session fixation), and store the actor with the
+renewed request, which carries the new session id:
 
 ```erlang
 {ok, Req1} = nova_auth_actor:renew(Req),
@@ -170,12 +170,12 @@ hand-written migration, create them yourself.
 ### Purging expired tokens
 
 Expired tokens fail validation but stay in the table until something
-deletes them. `nova_auth_token:purge_expired/1` deletes every expired
+deletes them. `nova_auth_session:purge_expired_tokens/1` deletes every expired
 session, confirm, reset, access and refresh token in one query and returns
 the number of rows removed:
 
 ```erlang
-{ok, Deleted} = nova_auth_token:purge_expired(my_auth).
+{ok, Deleted} = nova_auth_session:purge_expired_tokens(my_auth).
 ```
 
 Run it on a schedule. With [shigoto](https://github.com/Taure/shigoto), a
@@ -195,7 +195,7 @@ shigoto):
 -export([perform/1]).
 
 perform(_Args) ->
-    case nova_auth_token:purge_expired(my_auth) of
+    case nova_auth_session:purge_expired_tokens(my_auth) of
         {ok, _Deleted} -> ok;
         {error, _} = Error -> Error
     end.

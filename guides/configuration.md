@@ -29,7 +29,7 @@ can omit them entirely.
 | `reset_validity_hours` | `pos_integer()` | `1` | How long password reset tokens remain valid (hours) |
 | `access_token_validity_minutes` | `pos_integer()` | `60` | How long `nova_auth_refresh` access tokens remain valid (minutes) |
 | `refresh_token_validity_days` | `pos_integer()` | `30` | How long `nova_auth_refresh` refresh tokens remain valid (days) |
-| `hash_algorithm` | `pbkdf2_sha256` | `pbkdf2_sha256` | Password hashing algorithm. PBKDF2-SHA256 is the only one implemented; any other value (`bcrypt`, `argon2`, ...) makes `nova_auth:config/1` raise `{unsupported_hash_algorithm, Value}` |
+| `hash_algorithm` | `pbkdf2_sha256` | `pbkdf2_sha256` | Password hashing algorithm. PBKDF2-SHA256 is the only one implemented; any other value (`bcrypt`, `argon2`, ...) makes `nova_auth:config/1` raise `{unsupported_hash_algorithm, Value}`. The config is read lazily, so the error shows up on the first `nova_auth:config/1` call (usually the first sign-in or registration), not at boot |
 | `token_bytes` | `pos_integer()` | `32` | Number of random bytes for token generation |
 | `require_confirmed` | `boolean()` | `false` | When `true`, `nova_auth_accounts:authenticate/3` returns `{error, unconfirmed}` for a correct password if the user's `confirmed_at` is not set |
 
@@ -72,6 +72,10 @@ The `id` and `provider` fields are required. Additional fields (email, roles, et
 depend on your authentication strategy and claims mapping.
 
 ## Password Hashing
+
+`pbkdf2_iterations` in the `nova_auth` application env must be a positive
+integer; any other value raises `{invalid_pbkdf2_iterations, Value}` on the
+first hash or verify.
 
 The default algorithm is PBKDF2-SHA256 with these parameters:
 
@@ -121,7 +125,7 @@ that `nova_auth_confirm:confirm_user/2` sets.
 
 ## Purging Expired Tokens
 
-`nova_auth_token:purge_expired/1` deletes the tokens that are past their
+`nova_auth_session:purge_expired_tokens/1` deletes the tokens that are past their
 validity setting above. See the Getting Started guide for running it on a
 schedule.
 
