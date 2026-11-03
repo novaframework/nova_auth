@@ -126,6 +126,7 @@ Password auth options (all optional with defaults):
 | `reset_validity_hours` | `1` | Hours before reset tokens expire |
 | `hash_algorithm` | `pbkdf2_sha256` | Password hashing algorithm; `pbkdf2_sha256` is the only one implemented, other values raise |
 | `token_bytes` | `32` | Random bytes for token generation |
+| `require_confirmed` | `false` | Refuse sign-in for users without `confirmed_at` (`{error, unconfirmed}`) |
 
 ## Guides
 

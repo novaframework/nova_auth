@@ -31,6 +31,7 @@ can omit them entirely.
 | `refresh_token_validity_days` | `pos_integer()` | `30` | How long `nova_auth_refresh` refresh tokens remain valid (days) |
 | `hash_algorithm` | `pbkdf2_sha256` | `pbkdf2_sha256` | Password hashing algorithm. PBKDF2-SHA256 is the only one implemented; any other value (`bcrypt`, `argon2`, ...) makes `nova_auth:config/1` raise `{unsupported_hash_algorithm, Value}` |
 | `token_bytes` | `pos_integer()` | `32` | Number of random bytes for token generation |
+| `require_confirmed` | `boolean()` | `false` | When `true`, `nova_auth_accounts:authenticate/3` returns `{error, unconfirmed}` for a correct password if the user's `confirmed_at` is not set |
 
 ## Full Example
 
@@ -97,6 +98,32 @@ raw token is returned to the caller once and never stored.
 
 Tokens issued by nova_auth 0.2.0 and earlier used standard base64 (`+`, `/`,
 `=`). They are still accepted, and their stored hashes are unchanged.
+
+## Requiring Confirmed Accounts
+
+By default `nova_auth_accounts:authenticate/3` signs in users whether or not
+they have confirmed their email. Set `require_confirmed => true` to refuse
+unconfirmed users:
+
+```erlang
+case nova_auth_accounts:authenticate(my_auth, Email, Password) of
+    {ok, User} -> sign_in(User);
+    {error, unconfirmed} -> ask_to_confirm(Email);
+    {error, invalid_credentials} -> refuse()
+end.
+```
+
+The password is always verified first, so an unconfirmed account takes as
+long to answer as any other attempt. `{error, unconfirmed}` is only
+returned for the correct password; a wrong password is still
+`{error, invalid_credentials}`. The check reads the `confirmed_at` field
+that `nova_auth_confirm:confirm_user/2` sets.
+
+## Purging Expired Tokens
+
+`nova_auth_token:purge_expired/1` deletes the tokens that are past their
+validity setting above. See the Getting Started guide for running it on a
+schedule.
 
 ## Cache Invalidation
 

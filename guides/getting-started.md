@@ -101,23 +101,21 @@ Define a Kura schema for your users table:
 ```erlang
 -module(my_user).
 -behaviour(kura_schema).
--export([schema/0, changeset/2, registration_changeset/2]).
+-include_lib("kura/include/kura.hrl").
+-export([table/0, fields/0, registration_changeset/2]).
 
-schema() ->
-    #{
-        source => ~"users",
-        fields => #{
-            id => #{type => integer, primary_key => true},
-            email => #{type => string},
-            hashed_password => #{type => string},
-            confirmed_at => #{type => utc_datetime, default => undefined},
-            inserted_at => #{type => utc_datetime},
-            updated_at => #{type => utc_datetime}
-        }
-    }.
+table() -> ~"users".
 
-changeset(Data, Params) ->
-    kura_changeset:cast(my_user, Data, Params, [email]).
+fields() ->
+    [
+        #kura_field{name = id, type = id, primary_key = true, nullable = false},
+        #kura_field{name = email, type = string, nullable = false},
+        #kura_field{name = hashed_password, type = string, nullable = false},
+        #kura_field{name = confirmed_at, type = utc_datetime},
+        #kura_field{name = inserted_at, type = utc_datetime},
+        #kura_field{name = updated_at, type = utc_datetime},
+        #kura_field{name = password, type = string, virtual = true}
+    ].
 
 registration_changeset(Data, Params) ->
     CS = kura_changeset:cast(my_user, Data, Params, [email, password]),
@@ -131,25 +129,80 @@ registration_changeset(Data, Params) ->
 
 ### Token schema
 
-Define a Kura schema for the user tokens table:
+Define a Kura schema for the user tokens table. `family_id` and `used_at`
+are only used by `nova_auth_refresh`; the other fields are needed by every
+token flow.
 
 ```erlang
 -module(my_user_token).
 -behaviour(kura_schema).
--export([schema/0]).
+-include_lib("kura/include/kura.hrl").
+-export([table/0, fields/0, indexes/0]).
 
-schema() ->
-    #{
-        source => ~"user_tokens",
-        fields => #{
-            id => #{type => integer, primary_key => true},
-            user_id => #{type => integer},
-            token => #{type => string},
-            context => #{type => string},
-            inserted_at => #{type => utc_datetime}
-        }
-    }.
+table() -> ~"user_tokens".
+
+fields() ->
+    [
+        #kura_field{name = id, type = id, primary_key = true, nullable = false},
+        #kura_field{name = user_id, type = integer, nullable = false},
+        #kura_field{name = token, type = string, nullable = false},
+        #kura_field{name = context, type = string, nullable = false},
+        #kura_field{name = family_id, type = string},
+        #kura_field{name = used_at, type = utc_datetime},
+        #kura_field{name = inserted_at, type = utc_datetime}
+    ].
+
+indexes() ->
+    [
+        {[context, token], #{unique => true}},
+        {[user_id], #{}},
+        {[family_id], #{}}
+    ].
 ```
+
+Keep the indexes: tokens are looked up by `(context, token)`,
+`delete_all_user_tokens` and `revoke_all` filter on `user_id`, and
+`nova_auth_refresh:revoke_family/2` and reuse detection delete by
+`family_id`. Without them each of those calls scans the whole table.
+`rebar3 kura` generates them into the migration from `indexes/0`; with a
+hand-written migration, create them yourself.
+
+### Purging expired tokens
+
+Expired tokens fail validation but stay in the table until something
+deletes them. `nova_auth_token:purge_expired/1` deletes every expired
+session, confirm, reset, access and refresh token in one query and returns
+the number of rows removed:
+
+```erlang
+{ok, Deleted} = nova_auth_token:purge_expired(my_auth).
+```
+
+Run it on a schedule. With [shigoto](https://github.com/Taure/shigoto), a
+cron entry and a small worker are enough (nova_auth does not depend on
+shigoto):
+
+```erlang
+%% sys.config
+{shigoto, [
+    {cron, [{~"purge_auth_tokens", ~"0 3 * * *", my_purge_tokens_worker, #{}}]}
+]}
+```
+
+```erlang
+-module(my_purge_tokens_worker).
+-behaviour(shigoto_worker).
+-export([perform/1]).
+
+perform(_Args) ->
+    case nova_auth_token:purge_expired(my_auth) of
+        {ok, _Deleted} -> ok;
+        {error, _} = Error -> Error
+    end.
+```
+
+Without a job runner, `timer:apply_interval/4` from a process in your
+supervision tree does the same job on a single node.
 
 ### Registration
 

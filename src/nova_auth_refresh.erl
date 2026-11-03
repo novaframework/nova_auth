@@ -10,7 +10,9 @@ in the same `family_id`. Presenting an already-used refresh token is treated
 as theft — the whole family is revoked (`reuse_detected`).
 
 Requires the configured `token_schema` to have `family_id` (string) and
-`used_at` (utc_datetime) fields in addition to the session-token fields.
+`used_at` (utc_datetime) fields in addition to the session-token fields,
+and the table needs an index on `family_id`: `revoke_family/2` and reuse
+detection delete by it, which is a full table scan without one.
 Tokens are stored hashed via `nova_auth_token`.
 """.
 
