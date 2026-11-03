@@ -20,7 +20,7 @@ Add `nova_auth` to your deps (it is on [Hex](https://hex.pm/packages/nova_auth))
 
 ```erlang
 {deps, [
-    {nova_auth, "~> 0.2"}
+    {nova_auth, "~> 0.3.0"}
 ]}.
 ```
 
@@ -28,7 +28,7 @@ Password auth also needs Kura and its Postgres backend in your own deps:
 
 ```erlang
 {deps, [
-    {nova_auth, "~> 0.2"},
+    {nova_auth, "~> 0.3.0"},
     {kura, "~> 2.0"},
     {kura_postgres, "~> 1.1"}
 ]}.
@@ -73,9 +73,7 @@ Register and authenticate:
 
 ```erlang
 %% Register
-{ok, User} = nova_auth_accounts:register(
-    my_auth, fun my_user:registration_changeset/2, Params
-).
+{ok, User} = nova_auth_accounts:register(my_auth, Params).
 
 %% Authenticate and sign in: sign_in/2 renews the session (prevents session
 %% fixation) and stores the actor in the new one

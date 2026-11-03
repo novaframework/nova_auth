@@ -6,7 +6,7 @@ Add `nova_auth` to your `rebar.config` dependencies:
 
 ```erlang
 {deps, [
-    {nova_auth, "~> 0.2"}
+    {nova_auth, "~> 0.3.0"}
 ]}.
 ```
 
@@ -14,7 +14,7 @@ For password auth also add Kura and its Postgres backend:
 
 ```erlang
 {deps, [
-    {nova_auth, "~> 0.2"},
+    {nova_auth, "~> 0.3.0"},
     {kura, "~> 2.0"},
     {kura_postgres, "~> 1.1"}
 ]}.
@@ -208,17 +208,23 @@ supervision tree does the same job on a single node.
 
 ```erlang
 handle_register(Req) ->
-    {ok, Body, Req1} = cowboy_req:read_body(Req),
+    {ok, Body, _Req1} = cowboy_req:read_body(Req),
     Params = json:decode(Body),
-    case nova_auth_accounts:register(my_auth, fun my_user:registration_changeset/2, Params) of
+    case nova_auth_accounts:register(my_auth, Params) of
         {ok, User} ->
             {ok, Token} = nova_auth_confirm:generate_confirm_token(my_auth, User),
             ok = my_mailer:send_confirmation(maps:get(email, User), Token),
             {json, 201, #{}, #{~"id" => maps:get(id, User)}};
         {error, Changeset} ->
-            {json, 422, #{}, #{~"errors" => kura_changeset:errors(Changeset)}}
+            Errors = kura_changeset:traverse_errors(Changeset, fun(_Field, Msg) -> Msg end),
+            {json, 422, #{}, #{~"errors" => Errors}}
     end.
 ```
+
+`register/2` uses the `registration_changeset/2` of the configured
+`user_schema`. `traverse_errors/2` gives a map from field to a list of
+messages, for example `#{email => [~"has already been taken"]}`, which
+encodes as JSON as it is.
 
 The handler does not sign the new user in. With `require_confirmed => true`,
 `authenticate/3` refuses users who have not confirmed, and signing them in
