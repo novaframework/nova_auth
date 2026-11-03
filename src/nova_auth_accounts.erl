@@ -43,7 +43,12 @@ register(AuthMod, ChangesetFun, Params) ->
     CS = ChangesetFun(#{}, Params),
     kura_repo_worker:insert(Repo, CS).
 
--doc "Change a user's password after verifying the current password. Invalidates all tokens.".
+-doc """
+Change a user's password after verifying the current password. Invalidates all tokens.
+
+Actors already stored in other sessions with `nova_auth_actor` are not
+removed; see the Actor Session guide for ending those sessions too.
+""".
 -spec change_password(module(), map(), binary(), map()) ->
     {ok, map()} | {error, invalid_password} | {error, #kura_changeset{}}.
 change_password(AuthMod, User, CurrentPassword, NewParams) ->
@@ -65,7 +70,12 @@ change_password(AuthMod, User, CurrentPassword, NewParams) ->
             {error, invalid_password}
     end.
 
--doc "Change a user's identity (e.g. email) after verifying the current password. Invalidates all tokens.".
+-doc """
+Change a user's identity (e.g. email) after verifying the current password. Invalidates all tokens.
+
+Actors already stored in other sessions with `nova_auth_actor` are not
+removed; see the Actor Session guide for ending those sessions too.
+""".
 -spec change_identity(module(), map(), binary(), map()) ->
     {ok, map()} | {error, invalid_password} | {error, #kura_changeset{}}.
 change_identity(AuthMod, User, CurrentPassword, NewParams) ->

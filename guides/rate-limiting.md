@@ -17,7 +17,7 @@ Add the plugin to any route group:
   ]}
 ```
 
-By default, this allows 10 requests per 60 seconds per IP address using a sliding window algorithm.
+By default, this allows 10 requests per 60 seconds per IP address using a sliding window algorithm. Every option below is optional and falls back to its default.
 
 ## Configuration
 
@@ -27,11 +27,16 @@ Pass options in the plugin config map:
 {pre_request, nova_auth_rate_limit, #{
     limiter => auth_rate_limit,      % Limiter name (default: nova_auth_rate_limit)
     limit => 5,                       % Max requests per window (default: 10)
-    window => 900000,                 % Window in ms — 15 minutes (default: 60000)
+    window => 900000,                 % Window in ms, 15 minutes (default: 60000)
     algorithm => token_bucket,        % Seki algorithm (default: sliding_window)
     key_fun => fun my_key/1           % Custom key function (default: peer IP)
 }}
 ```
+
+A limiter is created by the first request that uses its name, with that
+request's `limit`, `window` and `algorithm`. Route groups that use the same
+`limiter` name (including the default) share its counters and its settings,
+so give each distinct policy its own name.
 
 ## Algorithms
 
@@ -46,15 +51,21 @@ Seki supports four rate limiting algorithms:
 
 ## Custom Rate Limit Keys
 
-By default, rate limiting is per client IP. You can customize this:
+By default, rate limiting is per client IP (`cowboy_req:peer/1`). Behind a
+reverse proxy that is the proxy's address, so derive the key from a header
+the proxy sets and clients cannot forge.
+
+Nova runs `pre_request` plugins before the route's security function, so
+`auth_data` is not in the request yet. Read the actor from the session
+instead:
 
 ```erlang
-%% Rate limit by authenticated user
+%% Rate limit by signed-in user, falling back to the client IP
 {pre_request, nova_auth_rate_limit, #{
     key_fun => fun(Req) ->
-        case maps:get(auth_data, Req, undefined) of
-            #{id := UserId} -> {user, UserId};
-            _ -> {ip, element(1, cowboy_req:peer(Req))}
+        case nova_auth_actor:fetch(Req) of
+            {ok, #{id := UserId}} -> {user, UserId};
+            {error, not_found} -> {ip, element(1, cowboy_req:peer(Req))}
         end
     end
 }}
@@ -63,11 +74,14 @@ By default, rate limiting is per client IP. You can customize this:
 ## Response Headers
 
 On allowed requests:
-- `x-ratelimit-remaining` — remaining requests in the current window
+- `x-ratelimit-remaining`: remaining requests in the current window
 
-On denied requests (429 Too Many Requests):
-- `retry-after` — seconds until the client can retry
-- `x-ratelimit-remaining` — `0`
+On denied requests (429 Too Many Requests, JSON body `{"error": "too many requests"}`):
+- `retry-after`: seconds until the client can retry
+- `x-ratelimit-remaining`: `0`
+
+A denied request stops the plugin chain (`{stop, Req, State}`), so the
+controller does not run.
 
 ## Multiple Limiters
 
@@ -95,5 +109,5 @@ You can apply different rate limits to different route groups:
 
 Seki emits telemetry events that you can observe:
 
-- `[seki, rate_limit, allow]` — request allowed
-- `[seki, rate_limit, deny]` — request denied
+- `[seki, rate_limit, allow]`: request allowed
+- `[seki, rate_limit, deny]`: request denied

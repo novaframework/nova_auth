@@ -27,7 +27,9 @@ can omit them entirely.
 | `session_validity_days` | `pos_integer()` | `14` | How long session tokens remain valid (days) |
 | `confirm_validity_days` | `pos_integer()` | `3` | How long email confirmation tokens remain valid (days) |
 | `reset_validity_hours` | `pos_integer()` | `1` | How long password reset tokens remain valid (hours) |
-| `hash_algorithm` | `atom()` | `pbkdf2_sha256` | Password hashing algorithm |
+| `access_token_validity_minutes` | `pos_integer()` | `60` | How long `nova_auth_refresh` access tokens remain valid (minutes) |
+| `refresh_token_validity_days` | `pos_integer()` | `30` | How long `nova_auth_refresh` refresh tokens remain valid (days) |
+| `hash_algorithm` | `pbkdf2_sha256` | `pbkdf2_sha256` | Password hashing algorithm. PBKDF2-SHA256 is the only one implemented; any other value (`bcrypt`, `argon2`, ...) makes `nova_auth:config/1` raise `{unsupported_hash_algorithm, Value}` |
 | `token_bytes` | `pos_integer()` | `32` | Number of random bytes for token generation |
 
 ## Full Example
@@ -88,9 +90,13 @@ prevent user enumeration.
 
 ## Token Generation
 
-Tokens are generated as base64-encoded random bytes (`crypto:strong_rand_bytes/1`).
-Only the SHA-256 hash of the token is stored in the database. The raw token is
-returned to the caller once and never stored.
+Tokens are random bytes (`crypto:strong_rand_bytes/1`) encoded as URL-safe
+base64 without padding, so they can go into links and cookies without
+escaping. Only the SHA-256 hash of the token is stored in the database. The
+raw token is returned to the caller once and never stored.
+
+Tokens issued by nova_auth 0.2.0 and earlier used standard base64 (`+`, `/`,
+`=`). They are still accepted, and their stored hashes are unchanged.
 
 ## Cache Invalidation
 

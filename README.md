@@ -2,7 +2,7 @@
 
 Authentication library for the [Nova](https://github.com/novaframework/nova) ecosystem.
 
-Provides a unified actor session, claims mapping, authorization policies, and optional password-based authentication. Works standalone or as the foundation for [nova_auth_oidc](https://github.com/Taure/nova_auth_oidc).
+Provides a unified actor session, claims mapping, authorization policies, and optional password-based authentication. Works standalone or as the foundation for [nova_auth_oidc](https://github.com/novaframework/nova_auth_oidc).
 
 ## Features
 
@@ -11,22 +11,32 @@ Provides a unified actor session, claims mapping, authorization policies, and op
 - **Security callbacks** -- Drop-in Nova security function for protecting route groups.
 - **Policy helpers** -- Composable authorization policies (role-based, claim-based, ownership, authenticated).
 - **Rate limiting** -- Nova plugin with configurable sliding-window rate limiting via Seki.
-- **Password auth** (optional, requires [Kura](https://github.com/Taure/kura)) -- PBKDF2-SHA256 hashing, session tokens, email confirmation, password reset.
+- **Password auth** (optional, requires [Kura](https://github.com/Taure/kura)) -- PBKDF2-SHA256 hashing, URL-safe session tokens, email confirmation, password reset.
 - **Timing-safe** -- Dummy verification on failed lookups to prevent user enumeration.
 
 ## Quick Start
 
-Add `nova_auth` to your deps:
+Add `nova_auth` to your deps (it is on [Hex](https://hex.pm/packages/nova_auth)):
 
 ```erlang
 {deps, [
-    {nova_auth, {git, "https://github.com/Taure/nova_auth.git", {branch, "main"}}}
+    {nova_auth, "~> 0.2"}
+]}.
+```
+
+Password auth also needs Kura and its Postgres backend in your own deps:
+
+```erlang
+{deps, [
+    {nova_auth, "~> 0.2"},
+    {kura, "~> 2.0"},
+    {kura_postgres, "~> 1.1"}
 ]}.
 ```
 
 ### OIDC-only (no database)
 
-If you only need actor sessions and policies (e.g., with [nova_auth_oidc](https://github.com/Taure/nova_auth_oidc)):
+If you only need actor sessions and policies (e.g., with [nova_auth_oidc](https://github.com/novaframework/nova_auth_oidc)):
 
 ```erlang
 %% Protect routes -- works with any auth strategy that stores an actor
@@ -67,9 +77,11 @@ Register and authenticate:
     my_auth, fun my_user:registration_changeset/2, Params
 ).
 
-%% Authenticate and store actor in session
+%% Authenticate, renew the session (prevents session fixation), store the actor
 {ok, User} = nova_auth_accounts:authenticate(my_auth, ~"user@example.com", ~"password123456").
-ok = nova_auth_actor:store(Req, #{id => maps:get(id, User), provider => password, email => maps:get(email, User)}).
+{ok, Req1} = nova_auth_actor:renew(Req).
+ok = nova_auth_actor:store(Req1, #{id => maps:get(id, User), provider => password, email => maps:get(email, User)}).
+%% Return Req1 from the controller, e.g. {redirect, ~"/", Req1}, so the new cookie is sent.
 
 %% Session token (database-backed)
 {ok, Token} = nova_auth_session:generate_session_token(my_auth, User).
@@ -112,7 +124,7 @@ Password auth options (all optional with defaults):
 | `session_validity_days` | `14` | Days before session tokens expire |
 | `confirm_validity_days` | `3` | Days before confirmation tokens expire |
 | `reset_validity_hours` | `1` | Hours before reset tokens expire |
-| `hash_algorithm` | `pbkdf2_sha256` | Password hashing algorithm |
+| `hash_algorithm` | `pbkdf2_sha256` | Password hashing algorithm; `pbkdf2_sha256` is the only one implemented, other values raise |
 | `token_bytes` | `32` | Random bytes for token generation |
 
 ## Guides
@@ -126,7 +138,7 @@ Password auth options (all optional with defaults):
 
 ## Related Libraries
 
-- [nova_auth_oidc](https://github.com/Taure/nova_auth_oidc) -- OIDC login, JWT bearer validation, token introspection, client credentials
+- [nova_auth_oidc](https://github.com/novaframework/nova_auth_oidc) -- OIDC login, JWT bearer validation, token introspection, client credentials
 - [Nova](https://github.com/novaframework/nova) -- Web framework
 - [Kura](https://github.com/Taure/kura) -- Database layer (optional)
 - [Seki](https://github.com/Taure/seki) -- Rate limiting
@@ -134,8 +146,8 @@ Password auth options (all optional with defaults):
 ## Requirements
 
 - Erlang/OTP 28+
-- PostgreSQL via Kura + pgo (only for password auth)
+- PostgreSQL via Kura and `kura_postgres` (only for password auth)
 
 ## License
 
-MIT
+Apache-2.0

@@ -6,7 +6,17 @@ Add `nova_auth` to your `rebar.config` dependencies:
 
 ```erlang
 {deps, [
-    {nova_auth, {git, "https://github.com/Taure/nova_auth.git", {branch, "main"}}}
+    {nova_auth, "~> 0.2"}
+]}.
+```
+
+For password auth also add Kura and its Postgres backend:
+
+```erlang
+{deps, [
+    {nova_auth, "~> 0.2"},
+    {kura, "~> 2.0"},
+    {kura_postgres, "~> 1.1"}
 ]}.
 ```
 
@@ -17,7 +27,7 @@ nova_auth supports two usage patterns:
 1. **Core only** -- actor sessions, claims mapping, policies, security callbacks. No database required.
 2. **Password auth** -- adds registration, login, session tokens, confirmation, reset. Requires [Kura](https://github.com/Taure/kura).
 
-For OIDC/OAuth2, see [nova_auth_oidc](https://github.com/Taure/nova_auth_oidc) which builds on nova_auth's actor session.
+For OIDC/OAuth2, see [nova_auth_oidc](https://github.com/novaframework/nova_auth_oidc) which builds on nova_auth's actor session.
 
 ## Core Only (No Database)
 
@@ -47,15 +57,20 @@ profile(#{auth_data := Actor} = _Req) ->
 
 ### Store an actor manually
 
-If you have your own authentication logic, store the actor directly:
+If you have your own authentication logic, store the actor directly. Renew
+the session first, so a session id that was planted or observed before
+sign-in stops working (session fixation), and return the renewed request so
+the new cookie reaches the client:
 
 ```erlang
-ok = nova_auth_actor:store(Req, #{
+{ok, Req1} = nova_auth_actor:renew(Req),
+ok = nova_auth_actor:store(Req1, #{
     id => ~"user-123",
     provider => my_custom_auth,
     email => ~"user@example.com",
     roles => [admin]
-}).
+}),
+{redirect, ~"/dashboard", Req1}.
 ```
 
 ## Password Auth (Requires Kura)
@@ -140,17 +155,17 @@ schema() ->
 
 ```erlang
 handle_register(Req) ->
-    {ok, Body, _Req1} = cowboy_req:read_body(Req),
+    {ok, Body, Req1} = cowboy_req:read_body(Req),
     Params = json:decode(Body),
     case nova_auth_accounts:register(my_auth, fun my_user:registration_changeset/2, Params) of
         {ok, User} ->
-            %% Store actor in session
-            ok = nova_auth_actor:store(Req, #{
+            {ok, Req2} = nova_auth_actor:renew(Req1),
+            ok = nova_auth_actor:store(Req2, #{
                 id => maps:get(id, User),
                 provider => password,
                 email => maps:get(email, User)
             }),
-            {json, 201, #{}, #{~"id" => maps:get(id, User)}};
+            {json, 201, #{}, Req2, #{~"id" => maps:get(id, User)}};
         {error, Changeset} ->
             {json, 422, #{}, #{~"errors" => kura_changeset:errors(Changeset)}}
     end.
@@ -160,16 +175,17 @@ handle_register(Req) ->
 
 ```erlang
 handle_login(Req) ->
-    {ok, Body, _Req1} = cowboy_req:read_body(Req),
+    {ok, Body, Req1} = cowboy_req:read_body(Req),
     #{~"email" := Email, ~"password" := Password} = json:decode(Body),
     case nova_auth_accounts:authenticate(my_auth, Email, Password) of
         {ok, User} ->
-            ok = nova_auth_actor:store(Req, #{
+            {ok, Req2} = nova_auth_actor:renew(Req1),
+            ok = nova_auth_actor:store(Req2, #{
                 id => maps:get(id, User),
                 provider => password,
                 email => maps:get(email, User)
             }),
-            {json, 200, #{}, #{~"user_id" => maps:get(id, User)}};
+            {json, 200, #{}, Req2, #{~"user_id" => maps:get(id, User)}};
         {error, invalid_credentials} ->
             {json, 401, #{}, #{~"error" => ~"invalid credentials"}}
     end.
@@ -179,6 +195,23 @@ handle_login(Req) ->
 
 ```erlang
 handle_logout(Req) ->
-    nova_auth_actor:delete(Req),
-    {json, 200, #{}, #{~"ok" => true}}.
+    {ok, Req1} = nova_auth_actor:renew(Req),
+    {json, 200, #{}, Req1, #{~"ok" => true}}.
 ```
+
+`renew/1` drops the whole session, actor included, and moves the client to a
+new session id.
+
+### Tokens in links
+
+Session, confirmation and reset tokens are URL-safe base64 without padding,
+so they can be put in a link as they are:
+
+```erlang
+{ok, Token} = nova_auth_reset:generate_reset_token(my_auth, User),
+Link = <<"https://example.com/password/reset?token=", Token/binary>>.
+```
+
+Tokens issued by nova_auth 0.2.0 and earlier used standard base64 and are
+still accepted; URL-encode those (`uri_string:compose_query/1`) if you put
+them in a link.

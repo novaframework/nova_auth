@@ -36,7 +36,12 @@ generate_reset_token(AuthMod, User) ->
         {error, _} = Err -> Err
     end.
 
--doc "Reset a user's password using a raw reset token. Invalidates all tokens on success.".
+-doc """
+Reset a user's password using a raw reset token. Invalidates all tokens on success.
+
+Actors already stored in other sessions with `nova_auth_actor` are not
+removed; see the Actor Session guide for ending those sessions too.
+""".
 -spec reset_password(module(), binary(), map()) -> {ok, map()} | {error, term()}.
 reset_password(AuthMod, Token, NewParams) ->
     Cfg = nova_auth:config(AuthMod),
