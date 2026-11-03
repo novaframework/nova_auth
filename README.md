@@ -163,9 +163,9 @@ These changes can break an existing app:
   options used to crash the plugin (badmatch) on every request; missing
   options now fall back to the defaults and the given ones apply, so those
   routes start limiting (and replying 429) instead of failing.
-- **`key_fun` is replaced by `key`:** `nova_auth_rate_limit` takes
-  `key => {Module, Function}` and rejects `key_fun` with
-  `error({removed_option, key_fun})`.
+- **`key_fun` is deprecated:** `nova_auth_rate_limit` takes
+  `key => {Module, Function}`. `key_fun` still works and logs one warning
+  per route configuration; it will be removed in a later release.
 - **Token length:** new tokens are URL-safe base64 without padding, 43
   characters for the default 32 bytes instead of 44. Tokens issued by 0.2
   still verify. Widen any column or validation that expects 44 characters.

@@ -42,13 +42,16 @@ whose settings differ from the ones the limiter was created with raises
 A denied request returns `{stop, {reply, 429, Headers, Body}, Req, State}`:
 Nova sends the 429 JSON reply and no later plugin or controller runs.
 
-The `key_fun` option of earlier releases is rejected with
-`error({removed_option, key_fun})`; use `key`.
+`key_fun` (`fun(Req) -> Key`) still works but is deprecated: it puts a fun
+in route configuration. It takes precedence over `key`, and each route
+configuration that uses it logs one warning. Use `key => {Module, Function}`.
 """.
 -behaviour(nova_plugin).
 
 -export([init/0, stop/1, pre_request/4, post_request/4, plugin_info/0]).
 -export([client_ip/1]).
+
+-include_lib("kernel/include/logger.hrl").
 
 -type reply() :: {reply, 429, #{binary() => binary()}, binary()}.
 
@@ -68,8 +71,6 @@ stop(_State) ->
 -doc false.
 -spec pre_request(cowboy_req:req(), term(), map(), term()) ->
     {ok, cowboy_req:req(), term()} | {stop, reply(), cowboy_req:req(), term()}.
-pre_request(_Req, _Env, #{key_fun := _}, _PluginState) ->
-    error({removed_option, key_fun});
 pre_request(Req, _Env, Options, PluginState) ->
     #{
         limit := Limit,
@@ -80,7 +81,7 @@ pre_request(Req, _Env, Options, PluginState) ->
     Settings = #{algorithm => Algorithm, limit => Limit, window => Window},
     LimiterName = limiter_name(Options, Settings),
     ok = ensure_limiter(LimiterName, Settings),
-    case seki:check(LimiterName, rate_limit_key(KeySpec, Req)) of
+    case seki:check(LimiterName, request_key(Options, KeySpec, Req)) of
         {allow, #{remaining := Remaining}} ->
             Req1 = cowboy_req:set_resp_header(
                 ~"x-ratelimit-remaining", integer_to_binary(Remaining), Req
@@ -259,6 +260,26 @@ unmap_ipv4({0, 0, 0, 0, 0, 16#FFFF, AB, CD}) ->
     {AB bsr 8, AB band 255, CD bsr 8, CD band 255};
 unmap_ipv4(IP) ->
     IP.
+
+request_key(#{key_fun := KeyFun} = Options, _KeySpec, Req) when is_function(KeyFun, 1) ->
+    warn_key_fun_once(Options),
+    KeyFun(Req);
+request_key(#{key_fun := Other}, _KeySpec, _Req) ->
+    error({invalid_option, key_fun, Other});
+request_key(_Options, KeySpec, Req) ->
+    rate_limit_key(KeySpec, Req).
+
+warn_key_fun_once(Options) ->
+    case persistent_term:get({?MODULE, key_fun_warned, Options}, false) of
+        true ->
+            ok;
+        false ->
+            persistent_term:put({?MODULE, key_fun_warned, Options}, true),
+            ?LOG_WARNING(#{
+                msg => ~"nova_auth_rate_limit key_fun is deprecated",
+                replacement => ~"key => {Module, Function}"
+            })
+    end.
 
 rate_limit_key(peer, Req) ->
     {IP, _Port} = cowboy_req:peer(Req),

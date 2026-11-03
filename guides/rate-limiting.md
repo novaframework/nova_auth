@@ -112,8 +112,18 @@ key(Req) ->
 ```
 
 `key` takes a `{Module, Function}` pair rather than a fun, so route
-configuration stays plain data. The `key_fun` option of earlier releases is
-rejected with `error({removed_option, key_fun})`.
+configuration stays plain data.
+
+`key_fun => fun(Req) -> Key end` from earlier releases still works but is
+deprecated. It takes precedence over `key` and logs one warning per route
+configuration. Replace it with `key`:
+
+```erlang
+%% Before
+{pre_request, nova_auth_rate_limit, #{key_fun => fun my_rate_limit:key/1}}
+%% After
+{pre_request, nova_auth_rate_limit, #{key => {my_rate_limit, key}}}
+```
 
 ## Response Headers
 

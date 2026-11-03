@@ -16,7 +16,8 @@
     partial_options_merge_defaults/1,
     deny_returns_reply_stop/1,
     key_module_function/1,
-    key_fun_is_rejected/1,
+    key_fun_still_keys_and_warns_once/1,
+    log/2,
     invalid_key_is_rejected/1,
     named_limiter_settings_conflict_raises/1,
     unnamed_groups_with_different_settings_are_independent/1,
@@ -50,7 +51,7 @@ groups() ->
             partial_options_merge_defaults,
             deny_returns_reply_stop,
             key_module_function,
-            key_fun_is_rejected,
+            key_fun_still_keys_and_warns_once,
             invalid_key_is_rejected,
             named_limiter_settings_conflict_raises,
             unnamed_groups_with_different_settings_are_independent,
@@ -153,12 +154,37 @@ key_module_function(_Config) ->
         nova_auth_rate_limit:pre_request(req({10, 0, 0, 5}), #{}, Options, s)
     ).
 
-key_fun_is_rejected(_Config) ->
-    Options = #{limiter => rl_key_fun, key_fun => fun test_rate_limit_key:same_key/1},
-    ?assertError(
-        {removed_option, key_fun},
-        nova_auth_rate_limit:pre_request(req({10, 0, 0, 6}), #{}, Options, s)
-    ).
+key_fun_still_keys_and_warns_once(_Config) ->
+    Options = #{limiter => rl_key_fun, limit => 1, key_fun => fun test_rate_limit_key:same_key/1},
+    ok = logger:add_handler(key_fun_capture, ?MODULE, #{config => #{pid => self()}}),
+    try
+        {ok, _, s} = nova_auth_rate_limit:pre_request(req({10, 0, 0, 6}), #{}, Options, s),
+        ?assertMatch(
+            {stop, {reply, 429, _, _}, _, s},
+            nova_auth_rate_limit:pre_request(req({10, 0, 0, 16}), #{}, Options, s)
+        ),
+        ?assertMatch(
+            {stop, {reply, 429, _, _}, _, s},
+            nova_auth_rate_limit:pre_request(req({10, 0, 0, 26}), #{}, Options, s)
+        )
+    after
+        ok = logger:remove_handler(key_fun_capture)
+    end,
+    ?assertEqual(1, length(deprecation_warnings())).
+
+log(#{level := Level, msg := {report, #{msg := Msg}}}, #{config := #{pid := Pid}}) ->
+    Pid ! {captured_log, Level, Msg};
+log(_Event, _Config) ->
+    ok.
+
+deprecation_warnings() ->
+    receive
+        {captured_log, warning, ~"nova_auth_rate_limit key_fun is deprecated"} ->
+            [warning | deprecation_warnings()];
+        {captured_log, _, _} ->
+            deprecation_warnings()
+    after 0 -> []
+    end.
 
 invalid_key_is_rejected(_Config) ->
     Options = #{limiter => rl_bad_key, key => not_a_key_spec},
