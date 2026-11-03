@@ -47,40 +47,44 @@ reset_password(AuthMod, Token, NewParams) ->
     Cfg = nova_auth:config(AuthMod),
     #{repo := Repo, token_schema := TokenSchema, user_schema := UserSchema} = Cfg,
     ResetHours = maps:get(reset_validity_hours, Cfg),
-    try
-        HashedToken = nova_auth_token:hash(Token),
-        Q = kura_query:where(
-            kura_query:where(kura_query:from(TokenSchema), {token, HashedToken}),
-            {context, <<"reset">>}
-        ),
-        case kura_repo_worker:all(Repo, Q) of
-            {ok, [TokenRecord]} ->
-                case token_valid_hours(maps:get(inserted_at, TokenRecord), ResetHours) of
-                    true ->
-                        UserId = maps:get(user_id, TokenRecord),
-                        case kura_repo_worker:get(Repo, UserSchema, UserId) of
-                            {ok, User} ->
-                                CS = apply_password_changeset(UserSchema, User, NewParams),
-                                case kura_repo_worker:update(Repo, CS) of
-                                    {ok, UpdatedUser} ->
-                                        nova_auth_session:delete_all_user_tokens(
-                                            AuthMod, UserId
-                                        ),
-                                        {ok, UpdatedUser};
+    case nova_auth_token:lookup_hash(Token) of
+        {error, invalid_token} ->
+            {error, not_found};
+        {ok, HashedToken} ->
+            try
+                Q = kura_query:where(
+                    kura_query:where(kura_query:from(TokenSchema), {token, HashedToken}),
+                    {context, <<"reset">>}
+                ),
+                case kura_repo_worker:all(Repo, Q) of
+                    {ok, [TokenRecord]} ->
+                        case token_valid_hours(maps:get(inserted_at, TokenRecord), ResetHours) of
+                            true ->
+                                UserId = maps:get(user_id, TokenRecord),
+                                case kura_repo_worker:get(Repo, UserSchema, UserId) of
+                                    {ok, User} ->
+                                        CS = apply_password_changeset(UserSchema, User, NewParams),
+                                        case kura_repo_worker:update(Repo, CS) of
+                                            {ok, UpdatedUser} ->
+                                                nova_auth_session:delete_all_user_tokens(
+                                                    AuthMod, UserId
+                                                ),
+                                                {ok, UpdatedUser};
+                                            {error, _} = Err ->
+                                                Err
+                                        end;
                                     {error, _} = Err ->
                                         Err
                                 end;
-                            {error, _} = Err ->
-                                Err
+                            false ->
+                                {error, token_expired}
                         end;
-                    false ->
-                        {error, token_expired}
-                end;
-            _ ->
-                {error, not_found}
-        end
-    catch
-        _:_ -> {error, invalid_token}
+                    _ ->
+                        {error, not_found}
+                end
+            catch
+                _:_ -> {error, invalid_token}
+            end
     end.
 
 %%----------------------------------------------------------------------

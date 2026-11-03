@@ -9,6 +9,7 @@
     hash_matches_standard_base64_spelling/1,
     hash_matches_legacy_storage_format/1,
     hash_rejects_invalid_token/1,
+    lookup_hash_never_raises/1,
     generate_unique_tokens/1,
     hash_is_deterministic/1,
     hash_differs_from_raw/1,
@@ -27,6 +28,7 @@ groups() ->
             hash_matches_standard_base64_spelling,
             hash_matches_legacy_storage_format,
             hash_rejects_invalid_token,
+            lookup_hash_never_raises,
             generate_unique_tokens,
             hash_is_deterministic,
             hash_differs_from_raw,
@@ -64,6 +66,14 @@ hash_matches_legacy_storage_format(_Config) ->
     LegacyToken = base64:encode(Raw),
     LegacyHash = base64:encode(crypto:hash(sha256, base64:decode(LegacyToken))),
     ?assertEqual(LegacyHash, nova_auth_token:hash(LegacyToken)).
+
+lookup_hash_never_raises(_Config) ->
+    Token = nova_auth_token:generate(),
+    ?assertEqual({ok, nova_auth_token:hash(Token)}, nova_auth_token:lookup_hash(Token)),
+    [
+        ?assertEqual({error, invalid_token}, nova_auth_token:lookup_hash(Junk))
+     || Junk <- [~"not a token!", ~"%%%", ~"a", 42, undefined]
+    ].
 
 hash_rejects_invalid_token(_Config) ->
     ?assertError(_, nova_auth_token:hash(~"not a token!")).

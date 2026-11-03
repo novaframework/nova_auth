@@ -24,6 +24,7 @@
     test_refresh_invalid/1,
     test_revoke_all_tokens/1,
     test_purge_expired_tokens/1,
+    test_undecodable_tokens_are_not_found/1,
     test_require_confirmed/1,
     test_require_confirmed_wrong_password/1
 ]).
@@ -45,6 +46,7 @@ all() ->
         test_refresh_invalid,
         test_revoke_all_tokens,
         test_purge_expired_tokens,
+        test_undecodable_tokens_are_not_found,
         test_require_confirmed,
         test_require_confirmed_wrong_password
     ].
@@ -263,13 +265,31 @@ test_purge_expired_tokens(_Config) ->
         {<<"api">>, 365 * 86400}
     ],
     [insert_token_row(UserId, Context, Age) || {Context, Age} <- Expired ++ Fresh],
-    ?assertEqual({ok, length(Expired)}, nova_auth_token:purge_expired(test_auth_config)),
+    ?assertEqual({ok, length(Expired)}, nova_auth_session:purge_expired_tokens(test_auth_config)),
     {ok, Rows} = kura_repo_worker:all(test_auth_repo, kura_query:from(test_auth_token)),
     ?assertEqual(
         lists:sort([Context || {Context, _} <- Fresh]),
         lists:sort([maps:get(context, Row) || Row <- Rows])
     ),
-    ?assertEqual({ok, 0}, nova_auth_token:purge_expired(test_auth_config)).
+    ?assertEqual({ok, 0}, nova_auth_session:purge_expired_tokens(test_auth_config)).
+
+test_undecodable_tokens_are_not_found(_Config) ->
+    Cfg = test_auth_config,
+    [
+        begin
+            ?assertEqual(
+                {error, not_found}, nova_auth_session:get_user_by_session_token(Cfg, Junk)
+            ),
+            ?assertEqual(ok, nova_auth_session:delete_session_token(Cfg, Junk)),
+            ?assertEqual({error, not_found}, nova_auth_confirm:confirm_user(Cfg, Junk)),
+            ?assertEqual({error, not_found}, nova_auth_reset:reset_password(Cfg, Junk, #{})),
+            ?assertEqual({error, not_found}, nova_auth_refresh:get_user_by_access_token(Cfg, Junk)),
+            ?assertEqual({error, invalid_refresh}, nova_auth_refresh:refresh(Cfg, Junk)),
+            ?assertEqual(ok, nova_auth_refresh:revoke_family(Cfg, Junk)),
+            ?assertEqual(ok, nova_auth_refresh:delete_access_token(Cfg, Junk))
+        end
+     || Junk <- [<<"Bearer junk!">>, <<"%%%">>, <<"a">>, <<>>]
+    ].
 
 test_require_confirmed(_Config) ->
     cleanup_users(),

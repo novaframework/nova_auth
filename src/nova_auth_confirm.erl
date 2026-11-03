@@ -42,46 +42,52 @@ confirm_user(AuthMod, Token) ->
     Cfg = nova_auth:config(AuthMod),
     #{repo := Repo, token_schema := TokenSchema, user_schema := UserSchema} = Cfg,
     ValidityDays = maps:get(confirm_validity_days, Cfg),
-    try
-        HashedToken = nova_auth_token:hash(Token),
-        Q = kura_query:where(
-            kura_query:where(kura_query:from(TokenSchema), {token, HashedToken}),
-            {context, <<"confirm">>}
-        ),
-        case kura_repo_worker:all(Repo, Q) of
-            {ok, [TokenRecord]} ->
-                case nova_auth_token:valid(maps:get(inserted_at, TokenRecord), ValidityDays) of
-                    true ->
-                        UserId = maps:get(user_id, TokenRecord),
-                        case kura_repo_worker:get(Repo, UserSchema, UserId) of
-                            {ok, User} ->
-                                Now = calendar:universal_time(),
-                                CS = kura_changeset:cast(
-                                    UserSchema,
-                                    User,
-                                    #{
-                                        confirmed_at => Now
-                                    },
-                                    [confirmed_at]
-                                ),
-                                case kura_repo_worker:update(Repo, CS) of
-                                    {ok, UpdatedUser} ->
-                                        nova_auth_session:delete_all_user_tokens(
-                                            AuthMod, UserId, <<"confirm">>
+    case nova_auth_token:lookup_hash(Token) of
+        {error, invalid_token} ->
+            {error, not_found};
+        {ok, HashedToken} ->
+            try
+                Q = kura_query:where(
+                    kura_query:where(kura_query:from(TokenSchema), {token, HashedToken}),
+                    {context, <<"confirm">>}
+                ),
+                case kura_repo_worker:all(Repo, Q) of
+                    {ok, [TokenRecord]} ->
+                        case
+                            nova_auth_token:valid(maps:get(inserted_at, TokenRecord), ValidityDays)
+                        of
+                            true ->
+                                UserId = maps:get(user_id, TokenRecord),
+                                case kura_repo_worker:get(Repo, UserSchema, UserId) of
+                                    {ok, User} ->
+                                        Now = calendar:universal_time(),
+                                        CS = kura_changeset:cast(
+                                            UserSchema,
+                                            User,
+                                            #{
+                                                confirmed_at => Now
+                                            },
+                                            [confirmed_at]
                                         ),
-                                        {ok, UpdatedUser};
+                                        case kura_repo_worker:update(Repo, CS) of
+                                            {ok, UpdatedUser} ->
+                                                nova_auth_session:delete_all_user_tokens(
+                                                    AuthMod, UserId, <<"confirm">>
+                                                ),
+                                                {ok, UpdatedUser};
+                                            {error, _} = Err ->
+                                                Err
+                                        end;
                                     {error, _} = Err ->
                                         Err
                                 end;
-                            {error, _} = Err ->
-                                Err
+                            false ->
+                                {error, token_expired}
                         end;
-                    false ->
-                        {error, token_expired}
-                end;
-            _ ->
-                {error, not_found}
-        end
-    catch
-        _:_ -> {error, invalid_token}
+                    _ ->
+                        {error, not_found}
+                end
+            catch
+                _:_ -> {error, invalid_token}
+            end
     end.

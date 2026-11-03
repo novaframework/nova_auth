@@ -107,9 +107,13 @@ revoke_all(AuthMod, UserId) ->
 -spec delete_access_token(module(), binary()) -> ok.
 delete_access_token(AuthMod, Access) when is_binary(Access) ->
     #{repo := Repo, token_schema := Schema} = nova_auth:config(AuthMod),
-    Q = q_by_token(Schema, nova_auth_token:hash(Access), ?ACCESS),
-    _ = kura_repo_worker:delete_all(Repo, Q),
-    ok;
+    case nova_auth_token:lookup_hash(Access) of
+        {ok, Hash} ->
+            _ = kura_repo_worker:delete_all(Repo, q_by_token(Schema, Hash, ?ACCESS)),
+            ok;
+        {error, invalid_token} ->
+            ok
+    end;
 delete_access_token(_AuthMod, _Access) ->
     ok.
 
@@ -177,10 +181,14 @@ insert_token(
 
 -spec one_by_token(module(), module(), binary(), binary()) -> {ok, map()} | none.
 one_by_token(Repo, Schema, RawToken, Context) ->
-    Q = q_by_token(Schema, nova_auth_token:hash(RawToken), Context),
-    case kura_repo_worker:all(Repo, Q) of
-        {ok, [Row | _]} -> {ok, Row};
-        _ -> none
+    case nova_auth_token:lookup_hash(RawToken) of
+        {ok, Hash} ->
+            case kura_repo_worker:all(Repo, q_by_token(Schema, Hash, Context)) of
+                {ok, [Row | _]} -> {ok, Row};
+                _ -> none
+            end;
+        {error, invalid_token} ->
+            none
     end.
 
 -spec q_by_token(module(), binary(), binary()) -> #kura_query{}.
