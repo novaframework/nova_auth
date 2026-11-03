@@ -36,7 +36,8 @@
     test_reset_failed_update_keeps_token/1,
     test_register_error_has_no_password/1,
     test_change_password_error_has_no_password/1,
-    test_refresh_failed_mint_keeps_token/1
+    test_refresh_failed_mint_keeps_token/1,
+    test_reset_claim_error_is_not_not_found/1
 ]).
 
 all() ->
@@ -68,7 +69,8 @@ all() ->
         test_reset_failed_update_keeps_token,
         test_register_error_has_no_password,
         test_change_password_error_has_no_password,
-        test_refresh_failed_mint_keeps_token
+        test_refresh_failed_mint_keeps_token,
+        test_reset_claim_error_is_not_not_found
     ].
 
 init_per_suite(Config) ->
@@ -455,6 +457,21 @@ test_refresh_failed_mint_keeps_token(_Config) ->
         ?assertMatch({error, _}, nova_auth_refresh:refresh(test_auth_config, Refresh))
     end),
     ?assertMatch({ok, _}, nova_auth_refresh:refresh(test_auth_config, Refresh)).
+
+test_reset_claim_error_is_not_not_found(_Config) ->
+    cleanup_users(),
+    {ok, User} = register_user(<<"reset-dberr@example.com">>, <<"password123456">>),
+    {ok, Token} = nova_auth_reset:generate_reset_token(test_auth_config, User),
+    Params = #{
+        password => <<"resetpass12345">>,
+        password_confirmation => <<"resetpass12345">>
+    },
+    with_trigger(<<"DELETE">>, fun() ->
+        Result = nova_auth_reset:reset_password(test_auth_config, Token, Params),
+        ?assertMatch({error, _}, Result),
+        ?assertNotEqual({error, not_found}, Result)
+    end),
+    ?assertMatch({ok, _}, nova_auth_reset:reset_password(test_auth_config, Token, Params)).
 
 with_trigger(Event, Fun) ->
     kura_repo_worker:pgo_query(

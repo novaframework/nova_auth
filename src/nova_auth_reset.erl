@@ -89,7 +89,7 @@ redeem(AuthMod, Cfg, TokenRecord, NewParams) ->
         case kura_repo_worker:delete_all(Repo, Claim) of
             {ok, 1} -> update_password(Repo, UserSchema, UserId, NewParams);
             {ok, _} -> throw({?MODULE, rollback, not_found});
-            {error, _} -> throw({?MODULE, rollback, not_found})
+            {error, Reason} -> throw({?MODULE, rollback, Reason})
         end
     end,
     try kura_repo_worker:transaction(Repo, Update) of
