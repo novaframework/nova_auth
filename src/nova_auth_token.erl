@@ -12,7 +12,7 @@ Tokens issued by earlier releases used standard base64 (`+`, `/`, `=`).
 
 -include("../include/nova_auth.hrl").
 
--export([generate/0, generate/1, hash/1, valid/1, valid/2]).
+-export([generate/0, generate/1, hash/1, valid/1, valid/2, purge_expired/1]).
 
 -doc "Generate a random token using the default byte size.".
 -spec generate() -> binary().
@@ -49,3 +49,45 @@ valid(InsertedAt, ValidityDays) ->
 
 to_standard_alphabet(Token) ->
     binary:replace(binary:replace(Token, ~"-", ~"+", [global]), ~"_", ~"/", [global]).
+
+-doc """
+Delete every expired token of the auth module `AuthMod` from its token table.
+
+Covers session, confirm, reset, access and refresh tokens, each against its
+own validity setting (`session_validity_days`, `confirm_validity_days`,
+`reset_validity_hours`, `access_token_validity_minutes`,
+`refresh_token_validity_days`), in one parameterised `DELETE`. Returns the
+number of rows deleted. Tokens of any other context are left alone.
+
+Expired tokens already fail validation; purging only keeps the table small.
+Run it periodically, for example from a scheduled job.
+""".
+-spec purge_expired(module()) -> {ok, non_neg_integer()} | {error, term()}.
+purge_expired(AuthMod) ->
+    #{repo := Repo, token_schema := TokenSchema} = Cfg = nova_auth:config(AuthMod),
+    Now = calendar:datetime_to_gregorian_seconds(calendar:universal_time()),
+    Expired = [
+        {'and', [{context, Context}, {inserted_at, '<', cutoff(Now, Seconds)}]}
+     || {Context, Seconds} <- validity_seconds(Cfg)
+    ],
+    Q = kura_query:where(kura_query:from(TokenSchema), {'or', Expired}),
+    kura_repo_worker:delete_all(Repo, Q).
+
+validity_seconds(Cfg) ->
+    #{
+        session_validity_days := SessionDays,
+        confirm_validity_days := ConfirmDays,
+        reset_validity_hours := ResetHours,
+        access_token_validity_minutes := AccessMinutes,
+        refresh_token_validity_days := RefreshDays
+    } = Cfg,
+    [
+        {~"session", SessionDays * 86400},
+        {~"confirm", ConfirmDays * 86400},
+        {~"reset", ResetHours * 3600},
+        {~"access", AccessMinutes * 60},
+        {~"refresh", RefreshDays * 86400}
+    ].
+
+cutoff(Now, Seconds) ->
+    calendar:gregorian_seconds_to_datetime(Now - Seconds).

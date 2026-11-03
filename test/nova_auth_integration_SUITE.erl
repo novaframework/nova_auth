@@ -22,7 +22,8 @@
     test_refresh_rotation_flow/1,
     test_refresh_reuse_revokes_family/1,
     test_refresh_invalid/1,
-    test_revoke_all_tokens/1
+    test_revoke_all_tokens/1,
+    test_purge_expired_tokens/1
 ]).
 
 all() ->
@@ -40,7 +41,8 @@ all() ->
         test_refresh_rotation_flow,
         test_refresh_reuse_revokes_family,
         test_refresh_invalid,
-        test_revoke_all_tokens
+        test_revoke_all_tokens,
+        test_purge_expired_tokens
     ].
 
 init_per_suite(Config) ->
@@ -237,6 +239,49 @@ test_revoke_all_tokens(_Config) ->
 %% Helpers
 %%----------------------------------------------------------------------
 
+test_purge_expired_tokens(_Config) ->
+    cleanup_users(),
+    {ok, User} = register_user(<<"purge@example.com">>, <<"password123456">>),
+    UserId = maps:get(id, User),
+    Expired = [
+        {<<"session">>, 15 * 86400},
+        {<<"confirm">>, 4 * 86400},
+        {<<"reset">>, 2 * 3600},
+        {<<"access">>, 61 * 60},
+        {<<"refresh">>, 31 * 86400}
+    ],
+    Fresh = [
+        {<<"session">>, 13 * 86400},
+        {<<"confirm">>, 2 * 86400},
+        {<<"reset">>, 30 * 60},
+        {<<"access">>, 59 * 60},
+        {<<"refresh">>, 29 * 86400},
+        {<<"api">>, 365 * 86400}
+    ],
+    [insert_token_row(UserId, Context, Age) || {Context, Age} <- Expired ++ Fresh],
+    ?assertEqual({ok, length(Expired)}, nova_auth_token:purge_expired(test_auth_config)),
+    {ok, Rows} = kura_repo_worker:all(test_auth_repo, kura_query:from(test_auth_token)),
+    ?assertEqual(
+        lists:sort([Context || {Context, _} <- Fresh]),
+        lists:sort([maps:get(context, Row) || Row <- Rows])
+    ),
+    ?assertEqual({ok, 0}, nova_auth_token:purge_expired(test_auth_config)).
+
+insert_token_row(UserId, Context, AgeSeconds) ->
+    Now = calendar:datetime_to_gregorian_seconds(calendar:universal_time()),
+    CS = kura_changeset:cast(
+        test_auth_token,
+        #{},
+        #{
+            user_id => UserId,
+            token => base64:encode(crypto:strong_rand_bytes(32)),
+            context => Context,
+            inserted_at => calendar:gregorian_seconds_to_datetime(Now - AgeSeconds)
+        },
+        [user_id, token, context, inserted_at]
+    ),
+    {ok, _} = kura_repo_worker:insert(test_auth_repo, CS).
+
 legacy_raw_bytes() ->
     Raw = crypto:strong_rand_bytes(32),
     case binary:match(base64:encode(Raw), [<<"+">>, <<"/">>]) of
@@ -310,6 +355,16 @@ setup_tables() ->
             "        ON user_tokens (context, token)\n"
             "    "
         >>,
+        []
+    ),
+    kura_repo_worker:pgo_query(
+        test_auth_repo,
+        <<"CREATE INDEX IF NOT EXISTS user_tokens_user_id_idx ON user_tokens (user_id)">>,
+        []
+    ),
+    kura_repo_worker:pgo_query(
+        test_auth_repo,
+        <<"CREATE INDEX IF NOT EXISTS user_tokens_family_id_idx ON user_tokens (family_id)">>,
         []
     ),
     ok.
