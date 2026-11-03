@@ -7,8 +7,7 @@
     groups/0,
     init_per_suite/1,
     end_per_suite/1,
-    init_per_group/2,
-    end_per_group/2
+    end_per_testcase/2
 ]).
 -export([
     init_returns_defaults/1,
@@ -22,6 +21,8 @@
     named_limiter_settings_conflict_raises/1,
     unnamed_groups_with_different_settings_are_independent/1,
     unnamed_groups_with_same_settings_share_counters/1,
+    derived_limiter_name_is_readable/1,
+    retry_after_rounds_up/1,
     client_ip_direct_peer/1,
     client_ip_untrusted_peer_ignores_header/1,
     client_ip_trusted_single_hop/1,
@@ -51,7 +52,9 @@ groups() ->
             invalid_key_is_rejected,
             named_limiter_settings_conflict_raises,
             unnamed_groups_with_different_settings_are_independent,
-            unnamed_groups_with_same_settings_share_counters
+            unnamed_groups_with_same_settings_share_counters,
+            derived_limiter_name_is_readable,
+            retry_after_rounds_up
         ]},
         {client_ip_tests, [], [
             client_ip_direct_peer,
@@ -73,16 +76,22 @@ init_per_suite(Config) ->
     Config.
 
 end_per_suite(_Config) ->
-    ok.
+    ok = application:stop(seki).
 
-init_per_group(client_ip_tests, Config) ->
-    Config;
-init_per_group(_Group, Config) ->
-    Config.
-
-end_per_group(client_ip_tests, _Config) ->
-    application:unset_env(nova_auth, trusted_proxies);
-end_per_group(_Group, _Config) ->
+end_per_testcase(_Case, _Config) ->
+    ok = application:unset_env(nova_auth, trusted_proxies),
+    [
+        begin
+            case Key of
+                {nova_auth_rate_limit, Name} when is_atom(Name) -> ok = seki:delete_limiter(Name);
+                _ -> ok
+            end,
+            persistent_term:erase(Key)
+        end
+     || {Key, _} <- persistent_term:get(),
+        is_tuple(Key),
+        element(1, Key) =:= nova_auth_rate_limit
+    ],
     ok.
 
 init_returns_defaults(_Config) ->
@@ -183,6 +192,25 @@ unnamed_groups_with_same_settings_share_counters(_Config) ->
         req({10, 0, 2, 1}), #{}, maps:merge(#{algorithm => sliding_window}, Options), s
     ),
     ?assertEqual(~"5", cowboy_req:resp_header(~"x-ratelimit-remaining", Req1)).
+
+derived_limiter_name_is_readable(_Config) ->
+    Options = #{limit => 4, window => 30000},
+    {ok, _, _} = nova_auth_rate_limit:pre_request(req({10, 0, 3, 1}), #{}, Options, s),
+    ?assertEqual(
+        #{algorithm => sliding_window, limit => 4, window => 30000},
+        persistent_term:get({nova_auth_rate_limit, nova_auth_rate_limit_sliding_window_4_30000})
+    ),
+    ?assertMatch(
+        {allow, #{remaining := 2}},
+        seki:check(nova_auth_rate_limit_sliding_window_4_30000, {10, 0, 3, 1})
+    ).
+
+retry_after_rounds_up(_Config) ->
+    Options = #{limit => 1, window => 1500},
+    {ok, _, _} = nova_auth_rate_limit:pre_request(req({10, 0, 4, 1}), #{}, Options, s),
+    {stop, {reply, 429, Headers, _}, _, s} =
+        nova_auth_rate_limit:pre_request(req({10, 0, 4, 1}), #{}, Options, s),
+    ?assertMatch(#{~"retry-after" := ~"2"}, Headers).
 
 client_ip_direct_peer(_Config) ->
     ok = application:unset_env(nova_auth, trusted_proxies),

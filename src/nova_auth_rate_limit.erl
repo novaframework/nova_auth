@@ -32,8 +32,8 @@ Every option is optional; `#{}` gives the defaults.
   limit key (default: the peer IP address). Behind a reverse proxy use
   `{nova_auth_rate_limit, client_ip}`, see `client_ip/1`.
 
-Without `limiter`, the name is derived from `limit`, `window` and
-`algorithm`: route groups with the same settings share counters and groups
+Without `limiter`, the name is derived from `algorithm`, `limit` and
+`window` (for example `nova_auth_rate_limit_sliding_window_10_60000`): route groups with the same settings share counters and groups
 with different settings are independent. Route groups that give the same
 `limiter` name share its counters and must use the same settings; a request
 whose settings differ from the ones the limiter was created with raises
@@ -83,16 +83,16 @@ pre_request(Req, _Env, Options, PluginState) ->
     case seki:check(LimiterName, rate_limit_key(KeySpec, Req)) of
         {allow, #{remaining := Remaining}} ->
             Req1 = cowboy_req:set_resp_header(
-                <<"x-ratelimit-remaining">>, integer_to_binary(Remaining), Req
+                ~"x-ratelimit-remaining", integer_to_binary(Remaining), Req
             ),
             {ok, Req1, PluginState};
         {deny, #{retry_after := RetryAfterMs}} ->
             Headers = #{
-                <<"content-type">> => <<"application/json">>,
-                <<"retry-after">> => integer_to_binary(retry_after_seconds(RetryAfterMs)),
-                <<"x-ratelimit-remaining">> => <<"0">>
+                ~"content-type" => ~"application/json",
+                ~"retry-after" => integer_to_binary(retry_after_seconds(RetryAfterMs)),
+                ~"x-ratelimit-remaining" => ~"0"
             },
-            Body = iolist_to_binary(json:encode(#{<<"error">> => <<"too many requests">>})),
+            Body = iolist_to_binary(json:encode(#{~"error" => ~"too many requests"})),
             {stop, {reply, 429, Headers, Body}, Req, PluginState}
     end.
 
@@ -157,12 +157,23 @@ defaults() ->
 limiter_name(#{limiter := Name}, _Settings) ->
     Name;
 limiter_name(_Options, Settings) ->
+    case persistent_term:get({?MODULE, name, Settings}, undefined) of
+        undefined ->
+            Name = derived_name(Settings),
+            persistent_term:put({?MODULE, name, Settings}, Name),
+            Name;
+        Name ->
+            Name
+    end.
+
+derived_name(#{algorithm := Algorithm, limit := Limit, window := Window}) ->
+    Name = iolist_to_binary(
+        io_lib:format("nova_auth_rate_limit_~w_~w_~w", [Algorithm, Limit, Window])
+    ),
     %% Settings come from route configuration, never from a request, so the
     %% atoms made here are bounded by the configured route groups.
     %% elp:ignore W0023 - bounded by route configuration
-    binary_to_atom(
-        <<"nova_auth_rate_limit_", (integer_to_binary(erlang:phash2(Settings)))/binary>>
-    ).
+    binary_to_atom(Name).
 
 ensure_limiter(Name, Settings) ->
     case persistent_term:get({?MODULE, Name}, undefined) of
@@ -257,7 +268,7 @@ rate_limit_key({Mod, Fun}, Req) when is_atom(Mod), is_atom(Fun) ->
 rate_limit_key(Other, _Req) ->
     error({invalid_option, key, Other}).
 
-retry_after_seconds(Ms) when is_integer(Ms), Ms >= 1000 ->
-    Ms div 1000;
+retry_after_seconds(Ms) when is_integer(Ms), Ms > 0 ->
+    (Ms + 999) div 1000;
 retry_after_seconds(_) ->
     1.
