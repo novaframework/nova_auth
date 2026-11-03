@@ -31,7 +31,9 @@
     test_change_identity_fallback_casts_only_identity/1,
     test_require_confirmed/1,
     test_require_confirmed_wrong_password/1,
-    test_refresh_concurrent_single_winner/1
+    test_refresh_concurrent_single_winner/1,
+    test_register_error_has_no_password/1,
+    test_change_password_error_has_no_password/1
 ]).
 
 all() ->
@@ -58,7 +60,9 @@ all() ->
         test_change_identity_fallback_casts_only_identity,
         test_require_confirmed,
         test_require_confirmed_wrong_password,
-        test_refresh_concurrent_single_winner
+        test_refresh_concurrent_single_winner,
+        test_register_error_has_no_password,
+        test_change_password_error_has_no_password
     ].
 
 init_per_suite(Config) ->
@@ -431,6 +435,49 @@ test_refresh_concurrent_single_winner(_Config) ->
         end
      || Results <- Trials
     ].
+
+test_register_error_has_no_password(_Config) ->
+    cleanup_users(),
+    {ok, _} = register_user(<<"dup@example.com">>, <<"password123456">>),
+    Secret = <<"SuperSecretPw123">>,
+    Params = #{
+        email => <<"dup@example.com">>,
+        password => Secret,
+        password_confirmation => Secret
+    },
+    BinParams = #{
+        <<"email">> => <<"dup@example.com">>,
+        <<"password">> => Secret,
+        <<"password_confirmation">> => Secret
+    },
+    Results = [
+        nova_auth_accounts:register(test_auth_config, Params),
+        nova_auth_accounts:register(
+            test_auth_config, fun test_auth_user:registration_changeset/2, Params
+        ),
+        nova_auth_accounts:register(
+            test_auth_config, fun test_auth_user:registration_changeset/2, BinParams
+        )
+    ],
+    [
+        begin
+            ?assertMatch({error, #kura_changeset{}}, Result),
+            ?assertEqual(nomatch, binary:match(term_to_binary(Result), Secret))
+        end
+     || Result <- Results
+    ].
+
+test_change_password_error_has_no_password(_Config) ->
+    cleanup_users(),
+    {ok, User} = register_user(<<"pw-err@example.com">>, <<"password123456">>),
+    Result = nova_auth_accounts:change_password(
+        test_auth_config, User, <<"password123456">>, #{
+            password => <<"MismatchSecret1">>,
+            password_confirmation => <<"MismatchSecret2">>
+        }
+    ),
+    ?assertMatch({error, #kura_changeset{}}, Result),
+    ?assertEqual(nomatch, binary:match(term_to_binary(Result), <<"MismatchSecret">>)).
 
 in_parallel(N, Fun) ->
     Self = self(),

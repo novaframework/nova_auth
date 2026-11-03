@@ -7,13 +7,16 @@ timing-based user enumeration.
 
 -include_lib("kura/include/kura.hrl").
 
+-define(PASSWORD_KEYS, [password, password_confirmation, ~"password", ~"password_confirmation"]).
+
 -export([
     authenticate/3,
     register/2,
     register/3,
     change_password/4,
     change_identity/4,
-    get_user_by_id/2
+    get_user_by_id/2,
+    scrub_passwords/1
 ]).
 
 -doc """
@@ -48,22 +51,32 @@ authenticate(AuthMod, Identity, Password) ->
 -doc """
 Register a new user with the configured user schema's
 `registration_changeset/2`.
+
+On `{error, Changeset}` the `password` and `password_confirmation` keys
+(atom and binary) are removed from the changeset's `changes` and `params`,
+so the plaintext password is not carried into error replies or logs.
 """.
 -spec register(module(), map()) -> {ok, map()} | {error, #kura_changeset{}}.
 register(AuthMod, Params) ->
     #{repo := Repo, user_schema := UserSchema} = nova_auth:config(AuthMod),
-    kura_repo_worker:insert(Repo, UserSchema:registration_changeset(#{}, Params)).
+    scrub_error(kura_repo_worker:insert(Repo, UserSchema:registration_changeset(#{}, Params))).
 
--doc "Register a new user using the provided changeset function and params.".
+-doc """
+Register a new user using the provided changeset function and params.
+
+Password keys are removed from an error changeset as in `register/2`.
+""".
 -spec register(module(), fun((map(), map()) -> #kura_changeset{}), map()) ->
     {ok, map()} | {error, #kura_changeset{}}.
 register(AuthMod, ChangesetFun, Params) ->
     #{repo := Repo} = nova_auth:config(AuthMod),
     CS = ChangesetFun(#{}, Params),
-    kura_repo_worker:insert(Repo, CS).
+    scrub_error(kura_repo_worker:insert(Repo, CS)).
 
 -doc """
 Change a user's password after verifying the current password. Invalidates all tokens.
+
+Password keys are removed from an error changeset as in `register/2`.
 
 Actors already stored in other sessions with `nova_auth_actor` are not
 removed; see the Actor Session guide for ending those sessions too.
@@ -83,7 +96,7 @@ change_password(AuthMod, User, CurrentPassword, NewParams) ->
                     nova_auth_session:delete_all_user_tokens(AuthMod, maps:get(id, User)),
                     {ok, UpdatedUser};
                 {error, _} = Err ->
-                    Err
+                    scrub_error(Err)
             end;
         false ->
             {error, invalid_password}
@@ -129,9 +142,24 @@ get_user_by_id(AuthMod, UserId) ->
     #{repo := Repo, user_schema := UserSchema} = nova_auth:config(AuthMod),
     kura_repo_worker:get(Repo, UserSchema, UserId).
 
+-doc false.
+-spec scrub_passwords(#kura_changeset{}) -> #kura_changeset{}.
+scrub_passwords(#kura_changeset{changes = Changes, params = Params} = CS) ->
+    CS#kura_changeset{
+        changes = maps:without(?PASSWORD_KEYS, Changes),
+        params = maps:without(?PASSWORD_KEYS, Params)
+    }.
+
 %%----------------------------------------------------------------------
 %% Internal
 %%----------------------------------------------------------------------
+
+-spec scrub_error({ok, map()} | {error, #kura_changeset{}}) ->
+    {ok, map()} | {error, #kura_changeset{}}.
+scrub_error({error, CS}) ->
+    {error, scrub_passwords(CS)};
+scrub_error({ok, _} = Ok) ->
+    Ok.
 
 check_confirmed(#{require_confirmed := true}, User) ->
     case maps:get(confirmed_at, User, undefined) of
