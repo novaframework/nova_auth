@@ -178,9 +178,12 @@ These changes can break an existing app:
   Groups that share an explicit `limiter` name must use the same settings: a
   mismatch raises `error({limiter_settings_conflict, Name, Existing, Requested})`.
 - **Refresh tokens under concurrency:** of several concurrent `refresh/2`
-  calls with one refresh token, one gets a new pair and the others get
-  `{error, reuse_detected}` and revoke the family. Clients that retry a
-  refresh in parallel (several tabs, retry on timeout) are signed out.
+  calls with one refresh token, one gets a new pair. The others get
+  `{error, reuse_detected}` and revoke the family, or `{error, invalid_refresh}`
+  if the family is already revoked. The winner's new refresh token is in that
+  family, so it is revoked too: clients that refresh in parallel (several
+  tabs, retry on timeout) keep only the new access token and must sign in
+  again. This is deliberate reuse detection (RFC 6819).
 - **Reset tokens under concurrency:** of several concurrent
   `reset_password/3` calls with one token, one succeeds and the others get
   `{error, not_found}`.

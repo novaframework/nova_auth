@@ -7,9 +7,20 @@ Short-lived access tokens paired with rotating refresh tokens.
 `refresh_token_validity_days`). The refresh token is single-use: `refresh/2`
 rotates it, marking the old one used and issuing a fresh access+refresh pair
 in the same `family_id`. Presenting an already-used refresh token is treated
-as theft: the whole family is revoked (`reuse_detected`). The token is claimed
-with a conditional update, so of several concurrent refreshes of one token
-exactly one gets a new pair and the others get `reuse_detected`.
+as theft: the whole family is revoked (`reuse_detected`).
+
+The token is claimed with a conditional update, in the same transaction that
+mints the new pair, so a failed mint leaves the token unspent. Of several
+concurrent refreshes of one token exactly one gets a new pair. The others
+get `reuse_detected` (and revoke the family), or `invalid_refresh` when
+another one has already revoked it.
+
+The winner's new refresh token is in the same family, so a concurrent
+loser's reuse detection revokes it too: after a concurrent refresh the
+winner keeps only its new access token and has to sign in again once that
+expires. This is deliberate. A refresh token presented twice may have been
+stolen, and revoking the family is the reuse detection of RFC 6819
+(section 5.2.2.3).
 
 Requires the configured `token_schema` to have `family_id` (string) and
 `used_at` (utc_datetime) fields in addition to the session-token fields,
@@ -137,20 +148,38 @@ handle_row(Cfg, Row, Days) ->
     end.
 
 %% The conditional update is the single-use check: of concurrent refreshes
-%% of one token only the one that flips used_at from NULL wins.
+%% of one token only the one that flips used_at from NULL wins. Minting runs
+%% in the same transaction, so a failed mint rolls the claim back.
 -spec rotate(map(), map()) -> {ok, tokens()} | {error, term()}.
 rotate(#{repo := Repo, token_schema := Schema} = Cfg, Row) ->
     Claim = kura_query:where(
         kura_query:where(kura_query:from(Schema), {id, maps:get(id, Row)}),
         {used_at, is_nil}
     ),
-    case kura_repo_worker:update_all(Repo, Claim, #{used_at => calendar:universal_time()}) of
-        {ok, 1} ->
-            mint_pair(Cfg, maps:get(user_id, Row), maps:get(family_id, Row, undefined));
-        {ok, 0} ->
-            reuse_detected(Cfg, Row);
-        {error, _} ->
+    ClaimAndMint = fun() ->
+        case kura_repo_worker:update_all(Repo, Claim, #{used_at => calendar:universal_time()}) of
+            {ok, 1} ->
+                case mint_pair(Cfg, maps:get(user_id, Row), maps:get(family_id, Row, undefined)) of
+                    {ok, Tokens} -> Tokens;
+                    {error, Reason} -> throw({?MODULE, rollback, {mint, Reason}})
+                end;
+            {ok, _} ->
+                throw({?MODULE, rollback, reused});
+            {error, _} ->
+                throw({?MODULE, rollback, invalid_refresh})
+        end
+    end,
+    try kura_repo_worker:transaction(Repo, ClaimAndMint) of
+        #{access_token := Access, refresh_token := Refresh} when
+            is_binary(Access), is_binary(Refresh)
+        ->
+            {ok, #{access_token => Access, refresh_token => Refresh}};
+        _ ->
             {error, invalid_refresh}
+    catch
+        throw:{?MODULE, rollback, reused} -> reuse_detected(Cfg, Row);
+        throw:{?MODULE, rollback, {mint, Reason}} -> {error, Reason};
+        throw:{?MODULE, rollback, invalid_refresh} -> {error, invalid_refresh}
     end.
 
 -spec reuse_detected(map(), map()) -> {error, reuse_detected}.

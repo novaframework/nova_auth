@@ -35,7 +35,8 @@
     test_reset_concurrent_single_use/1,
     test_reset_failed_update_keeps_token/1,
     test_register_error_has_no_password/1,
-    test_change_password_error_has_no_password/1
+    test_change_password_error_has_no_password/1,
+    test_refresh_failed_mint_keeps_token/1
 ]).
 
 all() ->
@@ -66,7 +67,8 @@ all() ->
         test_reset_concurrent_single_use,
         test_reset_failed_update_keeps_token,
         test_register_error_has_no_password,
-        test_change_password_error_has_no_password
+        test_change_password_error_has_no_password,
+        test_refresh_failed_mint_keeps_token
     ].
 
 init_per_suite(Config) ->
@@ -434,11 +436,48 @@ test_refresh_concurrent_single_winner(_Config) ->
     ],
     [
         begin
-            ?assertEqual(1, length([ok || {ok, _} <- Results])),
-            ?assertEqual(7, length([e || {error, reuse_detected} <- Results]))
+            {Winners, Losers} = lists:partition(fun(R) -> element(1, R) =:= ok end, Results),
+            ?assertEqual(1, length(Winners)),
+            ?assertEqual(
+                [],
+                [L || L <- Losers, L =/= {error, reuse_detected}, L =/= {error, invalid_refresh}]
+            ),
+            ?assert(lists:member({error, reuse_detected}, Losers))
         end
      || Results <- Trials
     ].
+
+test_refresh_failed_mint_keeps_token(_Config) ->
+    cleanup_users(),
+    {ok, User} = register_user(<<"mint-fail@example.com">>, <<"password123456">>),
+    {ok, #{refresh_token := Refresh}} = nova_auth_refresh:generate_pair(test_auth_config, User),
+    with_trigger(<<"INSERT">>, fun() ->
+        ?assertMatch({error, _}, nova_auth_refresh:refresh(test_auth_config, Refresh))
+    end),
+    ?assertMatch({ok, _}, nova_auth_refresh:refresh(test_auth_config, Refresh)).
+
+with_trigger(Event, Fun) ->
+    kura_repo_worker:pgo_query(
+        test_auth_repo,
+        <<
+            "CREATE OR REPLACE FUNCTION nova_auth_test_reject() RETURNS trigger AS $$ "
+            "BEGIN RAISE EXCEPTION 'rejected by test'; END $$ LANGUAGE plpgsql"
+        >>,
+        []
+    ),
+    kura_repo_worker:pgo_query(
+        test_auth_repo,
+        <<"CREATE TRIGGER nova_auth_test_reject BEFORE ", Event/binary,
+            " ON user_tokens FOR EACH ROW EXECUTE FUNCTION nova_auth_test_reject()">>,
+        []
+    ),
+    try
+        Fun()
+    after
+        kura_repo_worker:pgo_query(
+            test_auth_repo, <<"DROP TRIGGER IF EXISTS nova_auth_test_reject ON user_tokens">>, []
+        )
+    end.
 
 test_reset_concurrent_single_use(_Config) ->
     cleanup_users(),
