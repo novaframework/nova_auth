@@ -172,6 +172,25 @@ These changes can break an existing app:
   characters for the default 32 bytes instead of 44. Tokens issued by 0.2
   still verify. Widen any column or validation that expects 44 characters.
 - **Nova floor:** nova_auth now needs Nova 0.19 or later.
+- **Rate-limit names:** without `limiter`, the limiter name is now derived
+  from `limit`, `window` and `algorithm`, so route groups with different
+  settings no longer share one limiter (and its first request's settings).
+  Groups that share an explicit `limiter` name must use the same settings: a
+  mismatch raises `error({limiter_settings_conflict, Name, Existing, Requested})`.
+- **Refresh tokens under concurrency:** of several concurrent `refresh/2`
+  calls with one refresh token, one gets a new pair and the others get
+  `{error, reuse_detected}` and revoke the family. Clients that retry a
+  refresh in parallel (several tabs, retry on timeout) are signed out.
+- **Reset tokens under concurrency:** of several concurrent
+  `reset_password/3` calls with one token, one succeeds and the others get
+  `{error, not_found}`.
+- **Error changesets:** `register/2,3`, `change_password/4` and
+  `reset_password/3` remove `password` and `password_confirmation` (atom and
+  binary keys) from the changes and params of an error changeset.
+
+New in this release: `nova_auth_actor:sign_in/2` (renew, then store; the way
+to log a user in) and `nova_auth_rate_limit:client_ip/1` with the
+`trusted_proxies` env for apps behind a reverse proxy.
 
 ## License
 
