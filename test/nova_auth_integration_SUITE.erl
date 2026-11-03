@@ -13,6 +13,8 @@
     test_login_wrong_password/1,
     test_login_nonexistent_user/1,
     test_session_token_flow/1,
+    test_session_token_is_url_safe/1,
+    test_legacy_base64_session_token_still_valid/1,
     test_change_password/1,
     test_change_password_wrong_current/1,
     test_confirm_token_flow/1,
@@ -29,6 +31,8 @@ all() ->
         test_login_wrong_password,
         test_login_nonexistent_user,
         test_session_token_flow,
+        test_session_token_is_url_safe,
+        test_legacy_base64_session_token_still_valid,
         test_change_password,
         test_change_password_wrong_current,
         test_confirm_token_flow,
@@ -103,6 +107,34 @@ test_session_token_flow(_Config) ->
         {error, _},
         nova_auth_session:get_user_by_session_token(test_auth_config, Token)
     ).
+
+test_session_token_is_url_safe(_Config) ->
+    cleanup_users(),
+    {ok, User} = register_user(<<"urlsafe@example.com">>, <<"password123456">>),
+    {ok, Token} = nova_auth_session:generate_session_token(test_auth_config, User),
+    ?assertEqual(Token, uri_string:quote(Token)),
+    {ok, Found} = nova_auth_session:get_user_by_session_token(test_auth_config, Token),
+    ?assertEqual(maps:get(id, User), maps:get(id, Found)).
+
+test_legacy_base64_session_token_still_valid(_Config) ->
+    cleanup_users(),
+    {ok, User} = register_user(<<"legacy@example.com">>, <<"password123456">>),
+    Raw = legacy_raw_bytes(),
+    LegacyToken = base64:encode(Raw),
+    CS = kura_changeset:cast(
+        test_auth_token,
+        #{},
+        #{
+            user_id => maps:get(id, User),
+            token => base64:encode(crypto:hash(sha256, Raw)),
+            context => <<"session">>,
+            inserted_at => calendar:universal_time()
+        },
+        [user_id, token, context, inserted_at]
+    ),
+    {ok, _} = kura_repo_worker:insert(test_auth_repo, CS),
+    {ok, Found} = nova_auth_session:get_user_by_session_token(test_auth_config, LegacyToken),
+    ?assertEqual(maps:get(id, User), maps:get(id, Found)).
 
 test_change_password(_Config) ->
     cleanup_users(),
@@ -204,6 +236,13 @@ test_revoke_all_tokens(_Config) ->
 %%----------------------------------------------------------------------
 %% Helpers
 %%----------------------------------------------------------------------
+
+legacy_raw_bytes() ->
+    Raw = crypto:strong_rand_bytes(32),
+    case binary:match(base64:encode(Raw), [<<"+">>, <<"/">>]) of
+        nomatch -> legacy_raw_bytes();
+        _ -> Raw
+    end.
 
 register_user(Email, Password) ->
     nova_auth_accounts:register(

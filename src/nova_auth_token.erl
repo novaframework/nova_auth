@@ -1,7 +1,13 @@
 -module(nova_auth_token).
 -moduledoc ~"""
 Cryptographic token generation, hashing, and time-based validation.
-Tokens are base64-encoded random bytes, hashed with SHA-256 for storage.
+
+Tokens are random bytes encoded as URL-safe base64 without padding
+(RFC 4648 section 5), so they can go into URLs, query strings and cookies
+without escaping. They are hashed with SHA-256 for storage.
+
+Tokens issued by earlier releases used standard base64 (`+`, `/`, `=`).
+`hash/1` accepts both alphabets, so those tokens keep working.
 """.
 
 -include("../include/nova_auth.hrl").
@@ -16,12 +22,17 @@ generate() ->
 -doc "Generate a random token with the specified number of random bytes.".
 -spec generate(pos_integer()) -> binary().
 generate(Bytes) ->
-    base64:encode(crypto:strong_rand_bytes(Bytes)).
+    base64:encode(crypto:strong_rand_bytes(Bytes), #{mode => urlsafe, padding => false}).
 
--doc "SHA-256 hash a raw token for safe database storage.".
+-doc """
+SHA-256 hash a raw token for safe database storage.
+
+Accepts URL-safe and standard base64, with or without padding. A token and
+its other-alphabet spelling hash to the same value.
+""".
 -spec hash(binary()) -> binary().
 hash(RawToken) ->
-    Raw = base64:decode(RawToken),
+    Raw = base64:decode(to_standard_alphabet(RawToken), #{padding => false}),
     base64:encode(crypto:hash(sha256, Raw)).
 
 -doc "Check if a token is still valid using the default session validity period.".
@@ -35,3 +46,6 @@ valid(InsertedAt, ValidityDays) ->
     Now = calendar:datetime_to_gregorian_seconds(calendar:universal_time()),
     TokenTime = calendar:datetime_to_gregorian_seconds(InsertedAt),
     (Now - TokenTime) < (ValidityDays * 24 * 60 * 60).
+
+to_standard_alphabet(Token) ->
+    binary:replace(binary:replace(Token, ~"-", ~"+", [global]), ~"_", ~"/", [global]).
