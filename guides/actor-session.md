@@ -10,7 +10,7 @@ controllers -- works with this unified actor.
 ```
 Password login ──┐
                   │
-OIDC callback  ───┼──▶ nova_auth_actor:store(Req, Actor) ──▶ Nova ETS Session
+OIDC callback  ───┼──▶ nova_auth_actor:sign_in(Req, Actor) ──▶ Nova ETS Session
                   │
 Custom auth    ───┘
                                      │
@@ -42,15 +42,26 @@ The `provider` field identifies how the user authenticated. Common values:
 
 ## API
 
-### Store
+### Sign in
 
 ```erlang
-ok = nova_auth_actor:store(Req, #{
+{ok, SignedIn} = nova_auth_actor:sign_in(Req, #{
     id => ~"abc123",
     provider => password,
     email => ~"user@example.com"
 }).
 ```
+
+`sign_in/2` stores the actor and returns the request to go on with. On a Nova
+whose `nova_session` module has `sign_in` the client is moved to a new session
+id and what the session held before is deleted, so use `SignedIn` for every session
+call that follows. A `nova_csrf_plugin` token made for the old id is refused
+from then on, so answer a form sign-in with a redirect. On an earlier Nova
+the actor is stored in the session the request has and the same request comes
+back.
+
+`store/2` is deprecated. It still stores the actor and returns `ok`, and it
+leaves the session id as it was.
 
 ### Fetch
 
@@ -99,11 +110,11 @@ same session key. The security callback doesn't need to know which strategy
 was used:
 
 ```erlang
-%% Password login stores actor
-ok = nova_auth_actor:store(Req, #{id => UserId, provider => password, ...}).
+%% Password login signs the actor in
+{ok, _SignedIn} = nova_auth_actor:sign_in(Req, #{id => UserId, provider => password, ...}).
 
-%% OIDC callback stores actor (done by nova_auth_oidc_controller)
-ok = nova_auth_actor:store(Req, #{id => Sub, provider => authentik, ...}).
+%% OIDC callback signs the actor in (done by nova_auth_oidc_controller)
+{ok, _SignedIn} = nova_auth_actor:sign_in(Req, #{id => Sub, provider => authentik, ...}).
 
 %% Same security callback protects both
 security => nova_auth_security:require_authenticated()

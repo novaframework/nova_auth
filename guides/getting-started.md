@@ -45,12 +45,12 @@ profile(#{auth_data := Actor} = _Req) ->
     {json, #{id => Id, email => Email}}.
 ```
 
-### Store an actor manually
+### Sign an actor in manually
 
-If you have your own authentication logic, store the actor directly:
+If you have your own authentication logic, sign the actor in directly:
 
 ```erlang
-ok = nova_auth_actor:store(Req, #{
+{ok, _SignedIn} = nova_auth_actor:sign_in(Req, #{
     id => ~"user-123",
     provider => my_custom_auth,
     email => ~"user@example.com",
@@ -144,8 +144,8 @@ handle_register(Req) ->
     Params = json:decode(Body),
     case nova_auth_accounts:register(my_auth, fun my_user:registration_changeset/2, Params) of
         {ok, User} ->
-            %% Store actor in session
-            ok = nova_auth_actor:store(Req, #{
+            %% Sign the actor in
+            {ok, _SignedIn} = nova_auth_actor:sign_in(Req, #{
                 id => maps:get(id, User),
                 provider => password,
                 email => maps:get(email, User)
@@ -164,7 +164,7 @@ handle_login(Req) ->
     #{~"email" := Email, ~"password" := Password} = json:decode(Body),
     case nova_auth_accounts:authenticate(my_auth, Email, Password) of
         {ok, User} ->
-            ok = nova_auth_actor:store(Req, #{
+            {ok, _SignedIn} = nova_auth_actor:sign_in(Req, #{
                 id => maps:get(id, User),
                 provider => password,
                 email => maps:get(email, User)

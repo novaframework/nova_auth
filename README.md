@@ -67,9 +67,9 @@ Register and authenticate:
     my_auth, fun my_user:registration_changeset/2, Params
 ).
 
-%% Authenticate and store actor in session
+%% Authenticate and sign the actor in
 {ok, User} = nova_auth_accounts:authenticate(my_auth, ~"user@example.com", ~"password123456").
-ok = nova_auth_actor:store(Req, #{id => maps:get(id, User), provider => password, email => maps:get(email, User)}).
+{ok, _SignedIn} = nova_auth_actor:sign_in(Req, #{id => maps:get(id, User), provider => password, email => maps:get(email, User)}).
 
 %% Session token (database-backed)
 {ok, Token} = nova_auth_session:generate_session_token(my_auth, User).
@@ -81,7 +81,7 @@ ok = nova_auth_actor:store(Req, #{id => maps:get(id, User), provider => password
 
 | Module | Description |
 |--------|-------------|
-| `nova_auth_actor` | Store/fetch actor maps from Nova session |
+| `nova_auth_actor` | Sign actors in and out of the Nova session, fetch the actor |
 | `nova_auth_claims` | Transform provider claims to actor maps |
 | `nova_auth_security` | Route-level security callbacks |
 | `nova_auth_policy` | Authorization policies for nova_resource |
