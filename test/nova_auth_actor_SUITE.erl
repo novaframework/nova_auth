@@ -7,7 +7,8 @@
     sign_in_stores_the_actor/1,
     sign_in_moves_to_a_new_session/1,
     sign_in_keeps_the_session_without_nova_sign_in/1,
-    store_returns_ok/1
+    store_returns_ok/1,
+    delete_ends_the_whole_session/1
 ]).
 
 -define(SESSION_ID, ~"session-before-sign-in").
@@ -18,7 +19,8 @@ all() ->
         sign_in_stores_the_actor,
         sign_in_moves_to_a_new_session,
         sign_in_keeps_the_session_without_nova_sign_in,
-        store_returns_ok
+        store_returns_ok,
+        delete_ends_the_whole_session
     ].
 
 init_per_testcase(sign_in_moves_to_a_new_session, Config) ->
@@ -59,6 +61,13 @@ sign_in_keeps_the_session_without_nova_sign_in(_Config) ->
 store_returns_ok(_Config) ->
     ?assertEqual(ok, nova_auth_actor:store(request(), ?ACTOR)),
     ?assertEqual({ok, ?ACTOR}, nova_auth_actor:fetch(request())).
+
+delete_ends_the_whole_session(_Config) ->
+    {ok, SignedIn} = nova_auth_actor:sign_in(request(), ?ACTOR),
+    ok = nova_session:set(SignedIn, ~"cart", ~"three items"),
+    {ok, _SignedOut} = nova_auth_actor:delete(SignedIn),
+    ?assertEqual({error, not_found}, nova_auth_actor:fetch(SignedIn)),
+    ?assertEqual({error, not_found}, nova_session:get(SignedIn, ~"cart")).
 
 start_sessions(Config) ->
     ok = test_auth_session_backend:start(),

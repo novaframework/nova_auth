@@ -78,6 +78,8 @@ end.
 {ok, _Req} = nova_auth_actor:delete(Req).
 ```
 
+This deletes the whole session of the request, not only the actor.
+
 ### Session Key
 
 The actor is stored under the key `<<"nova_auth_actor">>`. You can retrieve it

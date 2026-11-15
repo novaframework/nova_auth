@@ -52,10 +52,10 @@ fetch(Req) ->
             {error, not_found}
     end.
 
--doc "Clear the actor from the Nova session.".
+-doc "Sign the actor out: delete the whole Nova session of the request.".
 -spec delete(cowboy_req:req()) -> {ok, cowboy_req:req()} | {error, atom()}.
 delete(Req) ->
-    nova_session:delete(Req, ?SESSION_KEY).
+    nova_session:delete(Req).
 
 -doc "Return the session key used for actor storage.".
 -spec session_key() -> binary().
