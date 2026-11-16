@@ -19,6 +19,14 @@ Add the plugin to any route group:
 
 By default, this allows 10 requests per 60 seconds per IP address using a sliding window algorithm.
 
+## When the limit is checked
+
+On a Nova that has the `pre_security/4` plugin callback, the limit is checked
+there: ahead of the security callback of the route group, for every request,
+so a request that the security callback refuses is counted as well. On an
+earlier Nova the limit is checked in `pre_request/4`. A request is counted
+once either way.
+
 ## Configuration
 
 Pass options in the plugin config map:
@@ -59,6 +67,10 @@ By default, rate limiting is per client IP. You can customize this:
     end
 }}
 ```
+
+On a Nova that checks the limit ahead of the security callback, `key_fun`
+runs before `auth_data` is set, so the example above falls back to the client
+IP there. Key on something the request carries itself, such as a header.
 
 ## Response Headers
 
